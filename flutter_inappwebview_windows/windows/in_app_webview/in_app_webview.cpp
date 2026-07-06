@@ -2295,7 +2295,7 @@ namespace flutter_inappwebview_plugin
           [completionHandler](HRESULT errorCode, LPCWSTR resultObjectAsJson) -> HRESULT
           {
             if (completionHandler) {
-              if (failedLog(errorCode) || resultObjectAsJson == nullptr) {
+              if (!succeededOrLog(errorCode) || resultObjectAsJson == nullptr) {
                 completionHandler("null");
               }
               else {

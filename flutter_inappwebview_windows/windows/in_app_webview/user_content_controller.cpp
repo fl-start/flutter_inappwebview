@@ -405,19 +405,9 @@ namespace flutter_inappwebview_plugin
 
     if (!userScript->contentWorld || ContentWorld::isPage(userScript->contentWorld)) {
       auto hr = webView_->webView->RemoveScriptToExecuteOnDocumentCreated(
-        utf8_to_wide(userScript->id).c_str(),
-        Callback<ICoreWebView2RemoveScriptToExecuteOnDocumentCreatedCompletedHandler>(
-          [completionHandler](HRESULT errorCode) -> HRESULT
-          {
-            failedLog(errorCode);
-            if (completionHandler) {
-              completionHandler();
-            }
-            return S_OK;
-          })
-        .Get());
-
-      if (failedAndLog(hr) && completionHandler) {
+        utf8_to_wide(userScript->id).c_str());
+      failedLog(hr);
+      if (completionHandler) {
         completionHandler();
       }
       return;
