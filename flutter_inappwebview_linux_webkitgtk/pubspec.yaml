@@ -1,0 +1,32 @@
+name: flutter_inappwebview_linux_webkitgtk
+description: Linux WebKitGTK (GtkOverlay) implementation of flutter_inappwebview for secMail.
+version: 0.1.0
+homepage: https://inappwebview.dev/
+repository: https://github.com/fl-start/flutter_inappwebview
+issue_tracker: https://github.com/pichillilorenzo/flutter_inappwebview/issues
+
+publish_to: none
+
+environment:
+  sdk: ^3.8.0
+  flutter: ">=3.32.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_inappwebview_platform_interface:
+    path: ../flutter_inappwebview_platform_interface
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  plugin:
+    implements: flutter_inappwebview
+    platforms:
+      linux:
+        pluginClass: FlutterInappwebviewLinuxWebkitgtkPlugin
+        dartPluginClass: LinuxWebKitGtkInAppWebViewPlatform
+        fileName: flutter_inappwebview_linux_webkitgtk_plugin.h

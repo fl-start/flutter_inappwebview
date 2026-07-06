@@ -10,7 +10,7 @@ This repository tracks upstream [flutter_inappwebview](https://github.com/pichil
 | macOS | `flutter_inappwebview_macos` | WKWebView |
 | iOS | `flutter_inappwebview_ios` | WKWebView |
 | Android | `flutter_inappwebview_android` | Hybrid composition in secMail |
-| Linux | **not used** in secMail mail viewer | secMail uses custom WebKitGTK |
+| Linux | `flutter_inappwebview_linux_webkitgtk` | WebKitGTK GtkOverlay (secMail mail viewer) |
 
 ## secMail-specific optimizations
 
