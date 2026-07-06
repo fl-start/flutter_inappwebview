@@ -2286,6 +2286,32 @@ namespace flutter_inappwebview_plugin
       return;
     }
 
+    // Page-world scripts: WebView2 ExecuteScript is much faster than CDP Runtime.evaluate.
+    if (ContentWorld::isPage(contentWorld)) {
+      const std::wstring script = utf8_to_wide(source);
+      auto hr = webView->ExecuteScript(
+        script.c_str(),
+        Callback<ICoreWebView2ExecuteScriptCompletedHandler>(
+          [completionHandler](HRESULT errorCode, LPCWSTR resultObjectAsJson) -> HRESULT
+          {
+            if (completionHandler) {
+              if (failedLog(errorCode) || resultObjectAsJson == nullptr) {
+                completionHandler("null");
+              }
+              else {
+                completionHandler(wide_to_utf8(resultObjectAsJson));
+              }
+            }
+            return S_OK;
+          })
+        .Get());
+
+      if (failedAndLog(hr) && completionHandler) {
+        completionHandler("null");
+      }
+      return;
+    }
+
     userContentController->createContentWorld(contentWorld,
       [=](const int& contextId)
       {

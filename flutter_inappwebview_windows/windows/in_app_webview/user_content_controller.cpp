@@ -347,13 +347,33 @@ namespace flutter_inappwebview_plugin
     }
     source = UserContentController::wrapSourceCodeAddChecks(source, userScript);
 
-    nlohmann::json parameters = {
-      {"source", source}
-    };
+    // Page world: native WebView2 document-created scripts (faster than CDP).
+    if (!userScript->contentWorld || ContentWorld::isPage(userScript->contentWorld)) {
+      auto hr = webView_->webView->AddScriptToExecuteOnDocumentCreated(
+        utf8_to_wide(source).c_str(),
+        Callback<ICoreWebView2AddScriptToExecuteOnDocumentCreatedCompletedHandler>(
+          [userScript, completionHandler](HRESULT errorCode, LPCWSTR id) -> HRESULT
+          {
+            if (succeededOrLog(errorCode) && id != nullptr) {
+              userScript->id = wide_to_utf8(id);
+            }
+            if (completionHandler) {
+              completionHandler(userScript->id);
+            }
+            return S_OK;
+          })
+        .Get());
 
-    if (userScript->contentWorld && !ContentWorld::isPage(userScript->contentWorld)) {
-      parameters["worldName"] = userScript->contentWorld->name;
+      if (failedAndLog(hr) && completionHandler) {
+        completionHandler(userScript->id);
+      }
+      return;
     }
+
+    nlohmann::json parameters = {
+      {"source", source},
+      {"worldName", userScript->contentWorld->name}
+    };
 
     auto hr = webView_->webView->CallDevToolsProtocolMethod(L"Page.addScriptToEvaluateOnNewDocument", utf8_to_wide(parameters.dump()).c_str(), Callback<ICoreWebView2CallDevToolsProtocolMethodCompletedHandler>(
       [userScript, completionHandler](HRESULT errorCode, LPCWSTR returnObjectAsJson)
@@ -378,6 +398,26 @@ namespace flutter_inappwebview_plugin
   {
     if (!webView_ || !(webView_->webView)) {
       if (completionHandler) {
+        completionHandler();
+      }
+      return;
+    }
+
+    if (!userScript->contentWorld || ContentWorld::isPage(userScript->contentWorld)) {
+      auto hr = webView_->webView->RemoveScriptToExecuteOnDocumentCreated(
+        utf8_to_wide(userScript->id).c_str(),
+        Callback<ICoreWebView2RemoveScriptToExecuteOnDocumentCreatedCompletedHandler>(
+          [completionHandler](HRESULT errorCode) -> HRESULT
+          {
+            failedLog(errorCode);
+            if (completionHandler) {
+              completionHandler();
+            }
+            return S_OK;
+          })
+        .Get());
+
+      if (failedAndLog(hr) && completionHandler) {
         completionHandler();
       }
       return;
