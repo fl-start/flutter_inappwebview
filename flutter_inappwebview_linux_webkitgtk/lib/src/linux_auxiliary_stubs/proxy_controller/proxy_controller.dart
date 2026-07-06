@@ -27,8 +27,7 @@ class LinuxProxyControllerCreationParams
 
 ///{@macro flutter_inappwebview_platform_interface.PlatformProxyController}
 ///
-/// Linux implementation of [PlatformProxyController] using WPE WebKit's
-/// [WebKitNetworkProxySettings](https://wpewebkit.org/reference/stable/wpe-webkit-2.0/struct.NetworkProxySettings.html).
+/// Linux auxiliary implementation of [PlatformProxyController] (WebKitGTK).
 class LinuxProxyController extends PlatformProxyController {
   static const MethodChannel _channel = MethodChannel(
     'com.pichillilorenzo/flutter_inappwebview_proxycontroller',

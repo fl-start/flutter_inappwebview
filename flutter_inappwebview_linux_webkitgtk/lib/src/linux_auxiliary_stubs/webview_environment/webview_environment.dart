@@ -24,8 +24,7 @@ class LinuxWebViewEnvironmentCreationParams
 
 /// Linux implementation of [PlatformWebViewEnvironment].
 ///
-/// This class provides access to WPE WebKit version information and
-/// WebKitWebContext management on Linux.
+/// Linux implementation of [PlatformWebViewEnvironment] (WebKitGTK system library).
 ///
 ///**Officially Supported Platforms/Implementations**:
 ///- Linux
@@ -108,10 +107,9 @@ class LinuxWebViewEnvironment extends PlatformWebViewEnvironment
 
   /// {@macro flutter_inappwebview_platform_interface.PlatformWebViewEnvironment.getAvailableVersion}
   ///
-  /// On Linux, this returns the WPE WebKit version (e.g., "2.42.0").
+  /// On Linux, returns the system WebKitGTK version (e.g. "2.44.0").
   ///
-  /// The [browserExecutableFolder] parameter is ignored on Linux as WPE WebKit
-  /// is a system library.
+  /// [browserExecutableFolder] is ignored on Linux (WebKitGTK is a system library).
   @override
   Future<String?> getAvailableVersion({String? browserExecutableFolder}) async {
     return await _staticChannel.invokeMethod<String>('getAvailableVersion');

@@ -2,16 +2,16 @@ import 'package:flutter_inappwebview_platform_interface/flutter_inappwebview_pla
 
 import 'in_app_webview/in_app_webview.dart';
 import 'in_app_webview/in_app_webview_controller.dart';
-import 'wpe_dart_stubs/cookie_manager/cookie_manager.dart';
-import 'wpe_dart_stubs/find_interaction/find_interaction_controller.dart';
-import 'wpe_dart_stubs/http_auth_credentials_database.dart';
-import 'wpe_dart_stubs/proxy_controller/proxy_controller.dart';
-import 'wpe_dart_stubs/web_message/web_message_channel.dart';
-import 'wpe_dart_stubs/web_message/web_message_listener.dart';
-import 'wpe_dart_stubs/web_message/web_message_port.dart';
-import 'wpe_dart_stubs/web_storage/web_storage.dart';
-import 'wpe_dart_stubs/web_storage/web_storage_manager.dart';
-import 'wpe_dart_stubs/webview_environment/webview_environment.dart';
+import 'linux_auxiliary_stubs/cookie_manager/cookie_manager.dart';
+import 'linux_auxiliary_stubs/find_interaction/find_interaction_controller.dart';
+import 'linux_auxiliary_stubs/http_auth_credentials_database.dart';
+import 'linux_auxiliary_stubs/proxy_controller/proxy_controller.dart';
+import 'linux_auxiliary_stubs/web_message/web_message_channel.dart';
+import 'linux_auxiliary_stubs/web_message/web_message_listener.dart';
+import 'linux_auxiliary_stubs/web_message/web_message_port.dart';
+import 'linux_auxiliary_stubs/web_storage/web_storage.dart';
+import 'linux_auxiliary_stubs/web_storage/web_storage_manager.dart';
+import 'linux_auxiliary_stubs/webview_environment/webview_environment.dart';
 
 /// WebKitGTK GtkOverlay implementation of [InAppWebViewPlatform] for secMail.
 class LinuxWebKitGtkInAppWebViewPlatform extends InAppWebViewPlatform {

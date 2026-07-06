@@ -49,8 +49,8 @@ dependency_overrides:
     path: ../../flutter_inappwebview_web
   flutter_inappwebview_windows:
     path: ../../flutter_inappwebview_windows
-  flutter_inappwebview_linux:
-    path: ../../flutter_inappwebview_linux
+  flutter_inappwebview_linux_webkitgtk:
+    path: ../../flutter_inappwebview_linux_webkitgtk
 
 dev_dependencies:
   flutter_test:

@@ -19,10 +19,7 @@ class LinuxWebStorageManagerCreationParams
   }
 }
 
-/// Implementation of [PlatformWebStorageManager] for Linux using WPE WebKit.
-///
-/// Uses [WebKitWebsiteDataManager](https://wpewebkit.org/reference/stable/wpe-webkit-2.0/class.WebsiteDataManager.html)
-/// to manage website data.
+/// Auxiliary [PlatformWebStorageManager] for Linux (WebKitGTK channel API).
 class LinuxWebStorageManager extends PlatformWebStorageManager {
   static const MethodChannel _channel = MethodChannel(
     'com.pichillilorenzo/flutter_inappwebview_webstoragemanager',
@@ -48,8 +45,8 @@ class LinuxWebStorageManager extends PlatformWebStorageManager {
   /// Creates and returns a new [LinuxWebStorageManager] for static methods.
   factory LinuxWebStorageManager.static() => _instance;
 
-  /// Maps WebsiteDataType to WPE WebKit data type strings.
-  static String _toWpeDataType(WebsiteDataType type) {
+  /// Maps WebsiteDataType to WebKitGTK website-data type strings.
+  static String _toWebKitWebsiteDataType(WebsiteDataType type) {
     if (type == WebsiteDataType.WKWebsiteDataTypeDiskCache) {
       return 'WEBKIT_WEBSITE_DATA_DISK_CACHE';
     } else if (type == WebsiteDataType.WKWebsiteDataTypeMemoryCache) {
@@ -69,7 +66,6 @@ class LinuxWebStorageManager extends PlatformWebStorageManager {
         WebsiteDataType.WKWebsiteDataTypeServiceWorkerRegistrations) {
       return 'WEBKIT_WEBSITE_DATA_SERVICE_WORKER_REGISTRATIONS';
     } else if (type == WebsiteDataType.WKWebsiteDataTypeFetchCache) {
-      // WPE uses same as disk cache for fetch cache
       return 'WEBKIT_WEBSITE_DATA_DISK_CACHE';
     } else if (type == WebsiteDataType.WKWebsiteDataTypeWebSQLDatabases) {
       // WebSQL is deprecated, map to local storage
@@ -79,23 +75,23 @@ class LinuxWebStorageManager extends PlatformWebStorageManager {
     return 'WEBKIT_WEBSITE_DATA_LOCAL_STORAGE';
   }
 
-  /// Maps WPE WebKit data type string to WebsiteDataType.
-  static WebsiteDataType? _fromWpeDataType(String wpeType) {
-    if (wpeType == 'WEBKIT_WEBSITE_DATA_DISK_CACHE') {
+  /// Maps WebKitGTK website-data type string to [WebsiteDataType].
+  static WebsiteDataType? _fromWebKitWebsiteDataType(String webkitType) {
+    if (webkitType == 'WEBKIT_WEBSITE_DATA_DISK_CACHE') {
       return WebsiteDataType.WKWebsiteDataTypeDiskCache;
-    } else if (wpeType == 'WEBKIT_WEBSITE_DATA_MEMORY_CACHE') {
+    } else if (webkitType == 'WEBKIT_WEBSITE_DATA_MEMORY_CACHE') {
       return WebsiteDataType.WKWebsiteDataTypeMemoryCache;
-    } else if (wpeType == 'WEBKIT_WEBSITE_DATA_OFFLINE_APPLICATION_CACHE') {
+    } else if (webkitType == 'WEBKIT_WEBSITE_DATA_OFFLINE_APPLICATION_CACHE') {
       return WebsiteDataType.WKWebsiteDataTypeOfflineWebApplicationCache;
-    } else if (wpeType == 'WEBKIT_WEBSITE_DATA_COOKIES') {
+    } else if (webkitType == 'WEBKIT_WEBSITE_DATA_COOKIES') {
       return WebsiteDataType.WKWebsiteDataTypeCookies;
-    } else if (wpeType == 'WEBKIT_WEBSITE_DATA_SESSION_STORAGE') {
+    } else if (webkitType == 'WEBKIT_WEBSITE_DATA_SESSION_STORAGE') {
       return WebsiteDataType.WKWebsiteDataTypeSessionStorage;
-    } else if (wpeType == 'WEBKIT_WEBSITE_DATA_LOCAL_STORAGE') {
+    } else if (webkitType == 'WEBKIT_WEBSITE_DATA_LOCAL_STORAGE') {
       return WebsiteDataType.WKWebsiteDataTypeLocalStorage;
-    } else if (wpeType == 'WEBKIT_WEBSITE_DATA_INDEXEDDB_DATABASES') {
+    } else if (webkitType == 'WEBKIT_WEBSITE_DATA_INDEXEDDB_DATABASES') {
       return WebsiteDataType.WKWebsiteDataTypeIndexedDBDatabases;
-    } else if (wpeType == 'WEBKIT_WEBSITE_DATA_SERVICE_WORKER_REGISTRATIONS') {
+    } else if (webkitType == 'WEBKIT_WEBSITE_DATA_SERVICE_WORKER_REGISTRATIONS') {
       return WebsiteDataType.WKWebsiteDataTypeServiceWorkerRegistrations;
     }
     return null;
@@ -105,13 +101,13 @@ class LinuxWebStorageManager extends PlatformWebStorageManager {
   Future<List<WebsiteDataRecord>> fetchDataRecords({
     required Set<WebsiteDataType> dataTypes,
   }) async {
-    final List<String> wpeDataTypes = dataTypes
-        .map((type) => _toWpeDataType(type))
+    final List<String> webkitDataTypes = dataTypes
+        .map((type) => _toWebKitWebsiteDataType(type))
         .toList();
 
     final result = await _channel.invokeMethod<List<dynamic>>(
       'fetchDataRecords',
-      {'dataTypes': wpeDataTypes},
+      {'dataTypes': webkitDataTypes},
     );
 
     if (result == null) {
@@ -127,7 +123,7 @@ class LinuxWebStorageManager extends PlatformWebStorageManager {
       if (dataTypesRaw != null) {
         dataTypesSet = dataTypesRaw
             .cast<String>()
-            .map((typeStr) => _fromWpeDataType(typeStr))
+            .map((typeStr) => _fromWebKitWebsiteDataType(typeStr))
             .whereType<WebsiteDataType>()
             .toSet();
       }
@@ -144,21 +140,21 @@ class LinuxWebStorageManager extends PlatformWebStorageManager {
     required Set<WebsiteDataType> dataTypes,
     required List<WebsiteDataRecord> dataRecords,
   }) async {
-    final List<String> wpeDataTypes = dataTypes
-        .map((type) => _toWpeDataType(type))
+    final List<String> webkitDataTypes = dataTypes
+        .map((type) => _toWebKitWebsiteDataType(type))
         .toList();
 
     final List<Map<String, dynamic>> recordList = dataRecords.map((record) {
       return {
         'displayName': record.displayName,
         'dataTypes': record.dataTypes
-            ?.map((type) => _toWpeDataType(type))
+            ?.map((type) => _toWebKitWebsiteDataType(type))
             .toList(),
       };
     }).toList();
 
     await _channel.invokeMethod('removeDataFor', {
-      'dataTypes': wpeDataTypes,
+      'dataTypes': webkitDataTypes,
       'recordList': recordList,
     });
   }
@@ -168,15 +164,15 @@ class LinuxWebStorageManager extends PlatformWebStorageManager {
     required Set<WebsiteDataType> dataTypes,
     required DateTime date,
   }) async {
-    final List<String> wpeDataTypes = dataTypes
-        .map((type) => _toWpeDataType(type))
+    final List<String> webkitDataTypes = dataTypes
+        .map((type) => _toWebKitWebsiteDataType(type))
         .toList();
 
     // Convert DateTime to Unix timestamp (seconds since epoch)
     final int timestamp = date.millisecondsSinceEpoch ~/ 1000;
 
     await _channel.invokeMethod('removeDataModifiedSince', {
-      'dataTypes': wpeDataTypes,
+      'dataTypes': webkitDataTypes,
       'timestamp': timestamp,
     });
   }
