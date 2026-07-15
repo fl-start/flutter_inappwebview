@@ -96,7 +96,7 @@ static void on_dart_message_result(GObject *source_object,
       escaped_error ? escaped_error : "",
       escaped_error ? "\"" : "");
   webkit_web_view_evaluate_javascript(context->web_view, script, -1, nullptr,
-                                      nullptr, nullptr, nullptr, nullptr, nullptr);
+                                      nullptr, nullptr, nullptr, nullptr);
   message_result_context_free(context);
 }
 
