@@ -1,5 +1,3 @@
-import 'package:flutter_inappwebview_platform_interface/flutter_inappwebview_platform_interface.dart';
-
 import 'webview_controller_webkitgtk.dart';
 
 /// Preserves native WebKitGTK overlay instances across widget disposal.

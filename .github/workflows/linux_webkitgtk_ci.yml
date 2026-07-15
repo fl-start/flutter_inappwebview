@@ -1,4 +1,31 @@
-  linux-webkitgtk-analyze:
+name: Linux WebKitGTK CI
+
+on:
+  push:
+    branches: [master, main]
+    paths:
+      - ".github/workflows/linux_webkitgtk_ci.yml"
+      - "flutter_inappwebview/**"
+      - "flutter_inappwebview_linux_webkitgtk/**"
+      - "flutter_inappwebview_platform_interface/**"
+  pull_request:
+    branches: [master, main]
+    paths:
+      - ".github/workflows/linux_webkitgtk_ci.yml"
+      - "flutter_inappwebview/**"
+      - "flutter_inappwebview_linux_webkitgtk/**"
+      - "flutter_inappwebview_platform_interface/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-webkitgtk-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze-and-test:
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -8,14 +35,12 @@
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
-      - name: Install WebKitGTK dev packages
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev
+          cache: true
       - run: flutter pub get
       - run: dart analyze --fatal-infos
+      - run: flutter test
 
-  linux-webkitgtk-build:
+  build:
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -25,7 +50,8 @@
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
-      - name: Install WebKitGTK dev packages
+          cache: true
+      - name: Install WebKitGTK build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev clang cmake ninja-build pkg-config
