@@ -576,7 +576,7 @@ class MockPlatformWebViewEnvironment extends PlatformWebViewEnvironment
   }) async => null;
 
   @override
-  Future<List<BrowserProcessInfo>> getBrowserProcessInfo() async => [];
+  Future<List<BrowserProcessInfo>> getProcessInfos() async => [];
 }
 
 class MockPlatformProcessGlobalConfig extends PlatformProcessGlobalConfig
@@ -590,7 +590,7 @@ class MockPlatformProcessGlobalConfig extends PlatformProcessGlobalConfig
   }) => true;
 
   @override
-  Future<void> setDataDirectorySuffix({required String suffix}) async {}
+  Future<void> apply({required ProcessGlobalConfigSettings settings}) async {}
 }
 
 class MockPlatformFindInteractionController
@@ -857,7 +857,7 @@ class MockPlatformChromeSafariBrowser extends PlatformChromeSafariBrowser
 
   @override
   void dispose() {
-    eventHandler = null;
+    super.dispose();
   }
 }
 

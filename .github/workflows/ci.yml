@@ -18,6 +18,12 @@ jobs:
         with:
           channel: stable
       - run: flutter pub get
+      # Generated/gitignored; required by integration tests that import environment.
+      - name: Generate integration test env.dart
+        working-directory: ${{ github.workspace }}
+        run: dart run tool/env.dart
+        env:
+          NODE_SERVER_IP: 127.0.0.1
       - run: dart analyze --fatal-infos
 
   windows-build:
@@ -49,3 +55,5 @@ jobs:
           java-version: "17"
       - run: flutter pub get
       - run: flutter build apk --debug
+        env:
+          GRADLE_OPTS: -Xmx4g -Dorg.gradle.daemon=false -Dorg.gradle.jvmargs=-Xmx4g

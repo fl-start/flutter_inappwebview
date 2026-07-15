@@ -295,6 +295,8 @@ function(FLUTTER_INAPPWEBVIEW_WINDOWS_APPLY_STANDARD_SETTINGS TARGET)
   target_compile_options(${TARGET} PRIVATE /bigobj)
   target_compile_definitions(${TARGET} PRIVATE "_HAS_EXCEPTIONS=0")
   target_compile_definitions(${TARGET} PRIVATE "$<$<CONFIG:Debug>:_DEBUG>")
+  # MSVC 14.51+ (VS 18): silence STL1011 for C++/WinRT <experimental/coroutine>.
+  target_compile_definitions(${TARGET} PRIVATE _SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS)
 endfunction()
 flutter_inappwebview_windows_apply_standard_settings(${PLUGIN_NAME})
 
