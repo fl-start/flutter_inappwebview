@@ -11,7 +11,8 @@ typedef struct _WebViewWebKitGTK WebViewWebKitGTK;
 // Unknown keys are ignored. No app-specific types or imports.
 
 WebKitWebContext *webview_webkitgtk_create_context_from_flutter_settings(
-    FlValue *settings_map_or_null);
+    FlValue *settings_map_or_null,
+    WebKitWebContext *shared_context_or_null);
 
 void webview_webkitgtk_apply_flutter_settings_map(
     WebViewWebKitGTK *instance,

@@ -151,6 +151,7 @@ enum PlatformInAppWebViewControllerMethod {
   ///**Officially Supported Platforms/Implementations**:
   ///- Android WebView
   ///- iOS WKWebView
+  ///- Linux WPE WebKit
   ///- macOS WKWebView
   ///- Web \<iframe\> but requires same origin
   ///- Windows WebView2
@@ -1869,6 +1870,7 @@ enum PlatformInAppWebViewControllerMethod {
   ///**Officially Supported Platforms/Implementations**:
   ///- Android WebView
   ///- iOS WKWebView
+  ///- Linux WPE WebKit
   ///- macOS WKWebView
   ///- Web \<iframe\> but requires same origin
   ///- Windows WebView2
@@ -2568,6 +2570,7 @@ extension _PlatformInAppWebViewControllerMethodSupported
                   [
                     TargetPlatform.android,
                     TargetPlatform.iOS,
+                    TargetPlatform.linux,
                     TargetPlatform.macOS,
                     TargetPlatform.windows,
                   ].contains(platform ?? defaultTargetPlatform);
@@ -3439,6 +3442,7 @@ extension _PlatformInAppWebViewControllerMethodSupported
                   [
                     TargetPlatform.android,
                     TargetPlatform.iOS,
+                    TargetPlatform.linux,
                     TargetPlatform.macOS,
                     TargetPlatform.windows,
                   ].contains(platform ?? defaultTargetPlatform);

@@ -303,7 +303,7 @@ class _PlatformServiceWorkerController extends PlatformServiceWorkerController {
       );
   factory _PlatformServiceWorkerController.static() => _static;
   @override
-  ServiceWorkerClient? get serviceWorkerClient => throw UnimplementedError();
+  ServiceWorkerClient? get serviceWorkerClient => null;
 }
 
 class _PlatformTracingController extends PlatformTracingController {

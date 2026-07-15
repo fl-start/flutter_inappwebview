@@ -22,7 +22,7 @@ WebViewPlatformView *webview_platform_view_new(
   gtk_widget_set_vexpand(instance->container, TRUE);
 
   // Create the WebKitWebView instance
-  instance->webkit_view = webview_webkitgtk_new(method_channel, view_id, nullptr);
+  instance->webkit_view = webview_webkitgtk_new(method_channel, view_id, nullptr, nullptr);
 
   // Get the WebKitWebView GTK widget
   GtkWidget *web_view_widget =

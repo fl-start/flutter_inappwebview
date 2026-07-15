@@ -44,7 +44,8 @@ struct _WebViewWebKitGTK
 WebViewWebKitGTK *webview_webkitgtk_new(
     FlMethodChannel *method_channel,
     gint64 view_id,
-    FlValue *settings_map_or_null);
+    FlValue *settings_map_or_null,
+    WebKitWebContext *shared_context_or_null);
 
 // Destroy WebKitGTK WebView instance
 void webview_webkitgtk_destroy(WebViewWebKitGTK *instance);
