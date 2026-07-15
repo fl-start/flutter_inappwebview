@@ -3,9 +3,18 @@
 #include <flutter_linux/flutter_linux.h>
 #include <gtk/gtk.h>
 #include <gdk/gdk.h>
+#include <math.h>
 
+// Always print coordinate traces while debugging Linux overlay placement.
+// (User-facing request: resize/alignment must be diagnosable from the terminal.)
 #ifndef WEBVIEW_ENABLE_DEBUG_PRINTS
-#define g_print(...) ((void)0)
+#define WEBVIEW_ENABLE_DEBUG_PRINTS 1
+#endif
+
+#if WEBVIEW_ENABLE_DEBUG_PRINTS
+#define coord_print(...) g_print(__VA_ARGS__)
+#else
+#define coord_print(...) ((void)0)
 #endif
 
 // Include Wayland-specific headers for display type checking
@@ -19,6 +28,130 @@ static gboolean on_window_delete_event(GtkWidget *widget, GdkEvent *event, gpoin
 // Handler for parent window configure event (position/size changes)
 static gboolean on_parent_configure_event(GtkWidget *widget, GdkEventConfigure *event, gpointer user_data);
 static gboolean on_window_key_press_event(GtkWidget *widget, GdkEventKey *event, gpointer user_data);
+static void on_host_size_allocate(GtkWidget *widget, GtkAllocation *allocation, gpointer user_data);
+static void emit_host_layout_changed(WebViewOverlayWindow *instance);
+
+static GtkWidget *find_gtk_overlay_ancestor(GtkWidget *widget)
+{
+  for (GtkWidget *w = widget; w != nullptr; w = gtk_widget_get_parent(w))
+  {
+    if (GTK_IS_OVERLAY(w))
+      return w;
+  }
+  return nullptr;
+}
+
+// GtkOverlay places each overlay child in its own GdkWindow whose origin is
+// moved via get-child-position. The GtkWidget itself is size-allocated at
+// (0,0) inside that window. queue_resize alone can leave a stale GdkWindow
+// during maximize/restore, so we also force move_resize when realized.
+static void force_overlay_child_gdk_window_bounds(WebViewOverlayWindow *instance)
+{
+  if (!instance || !instance->container || !instance->embedding_overlay)
+    return;
+  if (!instance->has_applied_screen_bounds)
+    return;
+  // Keep-alive / hidden views still receive configure events; never move them
+  // into place — that showed a second full-window WebKit on top of the inbox.
+  if (!gtk_widget_get_visible(instance->container))
+    return;
+  if (!gtk_widget_get_realized(instance->container) ||
+      !gtk_widget_get_realized(instance->embedding_overlay))
+    return;
+
+  GtkAllocation overlay_alloc;
+  gtk_widget_get_allocation(instance->embedding_overlay, &overlay_alloc);
+
+  // get-child-position returns Overlay-relative coords (last_screen_*).
+  // GtkOverlay then does allocation += overlay_alloc for the child GdkWindow
+  // when that window is parented to the toplevel. Mirror that exactly.
+  const gint win_w = MAX(1, instance->last_screen_width);
+  const gint win_h = MAX(1, instance->last_screen_height);
+
+  GdkWindow *overlay_gdk = gtk_widget_get_window(instance->embedding_overlay);
+  GdkWindow *child_gdk = gtk_widget_get_parent_window(instance->container);
+  GdkWindow *toplevel_gdk =
+      overlay_gdk != nullptr ? gdk_window_get_toplevel(overlay_gdk) : nullptr;
+
+  gint win_x = instance->last_screen_x;
+  gint win_y = instance->last_screen_y;
+  if (child_gdk && overlay_gdk && toplevel_gdk && child_gdk != overlay_gdk &&
+      gdk_window_get_parent(child_gdk) == toplevel_gdk)
+  {
+    win_x = overlay_alloc.x + instance->last_screen_x;
+    win_y = overlay_alloc.y + instance->last_screen_y;
+  }
+
+  if (child_gdk && overlay_gdk && child_gdk != overlay_gdk)
+  {
+    gint cur_x = 0, cur_y = 0, cur_w = 0, cur_h = 0;
+    gdk_window_get_position(child_gdk, &cur_x, &cur_y);
+    cur_w = gdk_window_get_width(child_gdk);
+    cur_h = gdk_window_get_height(child_gdk);
+    if (cur_x != win_x || cur_y != win_y || cur_w != win_w || cur_h != win_h)
+    {
+      gdk_window_move_resize(child_gdk, win_x, win_y, win_w, win_h);
+      coord_print(
+          "🐧 Forced GdkWindow move_resize: was(%d,%d %dx%d) -> (%d,%d %dx%d) "
+          "signal=(%d,%d) overlay_alloc=(%d,%d) view_id=%ld\n",
+          cur_x,
+          cur_y,
+          cur_w,
+          cur_h,
+          win_x,
+          win_y,
+          win_w,
+          win_h,
+          instance->last_screen_x,
+          instance->last_screen_y,
+          overlay_alloc.x,
+          overlay_alloc.y,
+          instance->view_id);
+    }
+    else
+    {
+      coord_print(
+          "🐧 GdkWindow ok (%d,%d %dx%d) signal=(%d,%d) overlay_alloc=(%d,%d) "
+          "view_id=%ld\n",
+          cur_x,
+          cur_y,
+          cur_w,
+          cur_h,
+          instance->last_screen_x,
+          instance->last_screen_y,
+          overlay_alloc.x,
+          overlay_alloc.y,
+          instance->view_id);
+    }
+  }
+  else
+  {
+    GtkAllocation alloc = {
+        .x = instance->last_screen_x,
+        .y = instance->last_screen_y,
+        .width = win_w,
+        .height = win_h,
+    };
+    gtk_widget_size_allocate(instance->container, &alloc);
+    coord_print(
+        "🐧 No overlay child GdkWindow; size_allocate widget @ (%d,%d %dx%d) "
+        "view_id=%ld\n",
+        alloc.x,
+        alloc.y,
+        alloc.width,
+        alloc.height,
+        instance->view_id);
+  }
+}
+
+static gboolean idle_force_overlay_child_bounds(gpointer user_data)
+{
+  WebViewOverlayWindow *instance = static_cast<WebViewOverlayWindow *>(user_data);
+  if (!instance || !instance->container)
+    return G_SOURCE_REMOVE;
+  force_overlay_child_gdk_window_bounds(instance);
+  return G_SOURCE_REMOVE;
+}
 
 static void apply_embedded_bounds(
     WebViewOverlayWindow *instance,
@@ -67,14 +200,12 @@ static void apply_embedded_bounds(
     }
   }
 
-  if (instance->has_applied_screen_bounds &&
+  const gboolean unchanged =
+      instance->has_applied_screen_bounds &&
       instance->last_screen_x == bounded_x &&
       instance->last_screen_y == bounded_y &&
       instance->last_screen_width == bounded_width &&
-      instance->last_screen_height == bounded_height)
-  {
-    return;
-  }
+      instance->last_screen_height == bounded_height;
 
   instance->has_applied_screen_bounds = TRUE;
   instance->last_screen_x = bounded_x;
@@ -82,18 +213,23 @@ static void apply_embedded_bounds(
   instance->last_screen_width = bounded_width;
   instance->last_screen_height = bounded_height;
 
+  if (unchanged)
+  {
+    // Bounds match cache, but Wayland/GtkOverlay may still have a stale
+    // GdkWindow — re-assert placement (critical on resize/maximize).
+    force_overlay_child_gdk_window_bounds(instance);
+    return;
+  }
+
   gtk_widget_set_halign(instance->container, GTK_ALIGN_START);
   gtk_widget_set_valign(instance->container, GTK_ALIGN_START);
-  // Positioning is now owned entirely by the "get-child-position" signal
-  // (on_get_child_position), which returns an absolute GdkRectangle to GTK.
-  // Margins MUST be zero here because GTK applies them INSIDE the allocated
-  // rectangle returned by that signal, which would produce a double-offset:
-  //   allocated.x = bounded_x  (from on_get_child_position)
-  //   effective content start = bounded_x + margin_start = 2*bounded_x  (WRONG)
-  // That subtraction caused "width -82 and height 99" GTK warnings when
-  // bounded_x > bounded_width (e.g. 282 > 200 → -82).
+  // Positioning is owned by "get-child-position" + forced GdkWindow move.
+  // Margins MUST stay zero (GTK applies them inside the get-child-position
+  // rectangle and would double-offset / produce negative width warnings).
   gtk_widget_set_margin_start(instance->container, 0);
+  gtk_widget_set_margin_end(instance->container, 0);
   gtk_widget_set_margin_top(instance->container, 0);
+  gtk_widget_set_margin_bottom(instance->container, 0);
   gtk_widget_set_size_request(instance->container, bounded_width, bounded_height);
 
   if (instance->webkit_view)
@@ -104,19 +240,176 @@ static void apply_embedded_bounds(
       gtk_widget_set_hexpand(web_view_widget, TRUE);
       gtk_widget_set_vexpand(web_view_widget, TRUE);
       gtk_widget_set_size_request(web_view_widget, bounded_width, bounded_height);
+      if (gtk_widget_get_realized(web_view_widget))
+      {
+        GdkRectangle clip = {0, 0, bounded_width, bounded_height};
+        gtk_widget_set_clip(web_view_widget, &clip);
+      }
     }
   }
 
-  // Queue resize on the embedding overlay (not just the container) so GTK
-  // invokes on_get_child_position immediately with the updated cached bounds,
-  // providing exact rather than natural-size allocation.
+  if (gtk_widget_get_realized(instance->container))
+  {
+    GdkRectangle clip = {0, 0, bounded_width, bounded_height};
+    gtk_widget_set_clip(instance->container, &clip);
+  }
+
+  // Queue resize on the embedding overlay so GTK re-runs get-child-position.
   if (instance->embedding_overlay && GTK_IS_WIDGET(instance->embedding_overlay))
     gtk_widget_queue_resize(GTK_WIDGET(instance->embedding_overlay));
   else
     gtk_widget_queue_resize(instance->container);
 
-  g_print("🐧 %s: %dx%d @ embedded(%d,%d) (view_id: %ld)\n",
+  // Apply immediately (do not wait for the next idle layout pass).
+  force_overlay_child_gdk_window_bounds(instance);
+  g_idle_add(idle_force_overlay_child_bounds, instance);
+
+  coord_print("🐧 %s: %dx%d @ embedded(%d,%d) (view_id: %ld)\n",
           log_prefix, bounded_width, bounded_height, bounded_x, bounded_y, instance->view_id);
+}
+
+static void emit_host_layout_changed(WebViewOverlayWindow *instance)
+{
+  if (!instance || !instance->method_channel || !instance->embedded_widget_mode)
+    return;
+
+  g_autoptr(FlValue) map = fl_value_new_map();
+  fl_value_set_string_take(
+      map, "viewId", fl_value_new_int((int64_t)instance->view_id));
+  fl_method_channel_invoke_method(
+      instance->method_channel,
+      "onHostLayoutChanged",
+      map,
+      nullptr,
+      nullptr,
+      nullptr);
+}
+
+static void on_host_size_allocate(
+    GtkWidget *widget,
+    GtkAllocation *allocation,
+    gpointer user_data)
+{
+  (void)widget;
+  (void)allocation;
+  WebViewOverlayWindow *instance = static_cast<WebViewOverlayWindow *>(user_data);
+  if (!instance)
+    return;
+  emit_host_layout_changed(instance);
+}
+
+// Convert Flutter-view-local logical coordinates to GtkOverlay allocation space.
+//
+// On Linux/Wayland FlView may report a logical size that differs from the GTK
+// widget allocation (HiDPI / fractional scale). Dart always sends logical
+// FlView-local coords; GtkOverlay statistics are physical widget allocations.
+//
+// IMPORTANT: gtk_widget_get_allocation() is parent-relative. FlView's
+// allocation is relative to GtkOverlay, while GtkOverlay's allocation is
+// relative to the window — never subtract those two directly. Use
+// gtk_widget_translate_coordinates(FlView → overlay) instead.
+static void convert_flutter_bounds_to_overlay(
+    WebViewOverlayWindow *instance,
+    gdouble flutter_x,
+    gdouble flutter_y,
+    gdouble flutter_w,
+    gdouble flutter_h,
+    gdouble flutter_view_w,
+    gdouble flutter_view_h,
+    gdouble device_pixel_ratio,
+    gint *out_x,
+    gint *out_y,
+    gint *out_w,
+    gint *out_h)
+{
+  gint overlay_x = (gint)lround(flutter_x);
+  gint overlay_y = (gint)lround(flutter_y);
+  gint overlay_w = (gint)lround(flutter_w);
+  gint overlay_h = (gint)lround(flutter_h);
+
+  GtkWidget *flutter_widget =
+      instance->flutter_view ? GTK_WIDGET(instance->flutter_view) : nullptr;
+  GtkWidget *host = instance->embedding_overlay;
+
+  if (flutter_widget && host &&
+      gtk_widget_get_realized(flutter_widget) &&
+      gtk_widget_get_realized(host))
+  {
+    const gint view_px_w = gtk_widget_get_allocated_width(flutter_widget);
+    const gint view_px_h = gtk_widget_get_allocated_height(flutter_widget);
+    const gint host_w = gtk_widget_get_allocated_width(host);
+    const gint host_h = gtk_widget_get_allocated_height(host);
+
+    gdouble scale_x = 1.0;
+    gdouble scale_y = 1.0;
+    if (flutter_view_w > 1.0 && view_px_w > 0)
+      scale_x = (gdouble)view_px_w / flutter_view_w;
+    else if (device_pixel_ratio > 0.01)
+      scale_x = device_pixel_ratio;
+
+    if (flutter_view_h > 1.0 && view_px_h > 0)
+      scale_y = (gdouble)view_px_h / flutter_view_h;
+    else if (device_pixel_ratio > 0.01)
+      scale_y = device_pixel_ratio;
+
+    // Translate FlView origin into GtkOverlay coordinates. This is the only
+    // correct way to combine widget spaces when FlView is nested in the
+    // overlay (allocation origins are not in the same space).
+    gint origin_x = 0;
+    gint origin_y = 0;
+    if (!gtk_widget_translate_coordinates(
+            flutter_widget, host, 0, 0, &origin_x, &origin_y))
+    {
+      origin_x = 0;
+      origin_y = 0;
+    }
+
+    overlay_x = origin_x + (gint)lround(flutter_x * scale_x);
+    overlay_y = origin_y + (gint)lround(flutter_y * scale_y);
+    overlay_w = (gint)lround(flutter_w * scale_x);
+    overlay_h = (gint)lround(flutter_h * scale_y);
+
+    coord_print(
+        "🐧 Coord map: flutter(%.1f,%.1f %.1fx%.1f) viewLogical=%.1fx%.1f "
+        "flAlloc=%dx%d host=%dx%d origin=%d,%d scale=%.3fx%.3f "
+        "-> overlay(%d,%d %dx%d) dpr=%.2f\n",
+        flutter_x,
+        flutter_y,
+        flutter_w,
+        flutter_h,
+        flutter_view_w,
+        flutter_view_h,
+        view_px_w,
+        view_px_h,
+        host_w,
+        host_h,
+        origin_x,
+        origin_y,
+        scale_x,
+        scale_y,
+        overlay_x,
+        overlay_y,
+        overlay_w,
+        overlay_h,
+        device_pixel_ratio);
+  }
+  else if (device_pixel_ratio > 0.01 && fabs(device_pixel_ratio - 1.0) > 0.01)
+  {
+    // Fallback when allocations are not available yet.
+    overlay_x = (gint)lround(flutter_x * device_pixel_ratio);
+    overlay_y = (gint)lround(flutter_y * device_pixel_ratio);
+    overlay_w = (gint)lround(flutter_w * device_pixel_ratio);
+    overlay_h = (gint)lround(flutter_h * device_pixel_ratio);
+  }
+
+  if (out_x)
+    *out_x = overlay_x;
+  if (out_y)
+    *out_y = overlay_y;
+  if (out_w)
+    *out_w = MAX(1, overlay_w);
+  if (out_h)
+    *out_h = MAX(1, overlay_h);
 }
 
 static void apply_overlay_screen_bounds(
@@ -260,12 +553,26 @@ static gboolean on_get_child_position(
   WebViewOverlayWindow *instance = (WebViewOverlayWindow *)user_data;
   // Only handle our own container; return FALSE for all other overlay children.
   if (!instance || widget != instance->container || !instance->has_applied_screen_bounds)
+  {
+    coord_print(
+        "🐧 get-child-position skip (ours=%d applied=%d) view_id=%ld\n",
+        (instance && widget == instance->container) ? 1 : 0,
+        (instance && instance->has_applied_screen_bounds) ? 1 : 0,
+        instance ? instance->view_id : -1);
     return FALSE;
+  }
 
   allocation->x = instance->last_screen_x;
   allocation->y = instance->last_screen_y;
   allocation->width = MAX(1, instance->last_screen_width);
   allocation->height = MAX(1, instance->last_screen_height);
+  coord_print(
+      "🐧 get-child-position -> (%d,%d %dx%d) view_id=%ld\n",
+      allocation->x,
+      allocation->y,
+      allocation->width,
+      allocation->height,
+      instance->view_id);
   return TRUE; // exact allocation provided – GTK skips default sizing
 }
 
@@ -320,12 +627,21 @@ WebViewOverlayWindow *webview_overlay_window_new(
   instance->parent_window = GTK_WINDOW(toplevel);
 
   GtkWidget *flutter_parent = gtk_widget_get_parent(flutter_widget);
-  if (instance->window_mode == WEBVIEW_WINDOW_MODE_OVERLAY &&
-      flutter_parent && GTK_IS_OVERLAY(flutter_parent))
+  // Prefer an Overlay ancestor (not only the immediate parent). Newer Flutter
+  // Linux shells may wrap FlView; requiring a direct GtkOverlay parent incorrectly
+  // falls back to the undecorated popup path → floating misaligned email body.
+  GtkWidget *overlay_host = find_gtk_overlay_ancestor(flutter_widget);
+  if (instance->window_mode == WEBVIEW_WINDOW_MODE_OVERLAY && overlay_host)
   {
     // True embedded path: keep WebKitGTK inside the same toplevel window.
     instance->embedded_widget_mode = TRUE;
-    instance->embedding_overlay = flutter_parent;
+    instance->embedding_overlay = overlay_host;
+    if (flutter_parent != overlay_host)
+    {
+      g_print(
+          "🐧 FlView parent is %s; embedding into Overlay ancestor\n",
+          flutter_parent ? G_OBJECT_TYPE_NAME(flutter_parent) : "(null)");
+    }
     instance->container = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     gtk_widget_set_halign(instance->container, GTK_ALIGN_START);
     gtk_widget_set_valign(instance->container, GTK_ALIGN_START);
@@ -342,6 +658,11 @@ WebViewOverlayWindow *webview_overlay_window_new(
     instance->child_position_handler_id = g_signal_connect(
         G_OBJECT(instance->embedding_overlay), "get-child-position",
         G_CALLBACK(on_get_child_position), instance);
+    instance->host_layout_flutter_handler_id = g_signal_connect(
+        flutter_widget, "size-allocate", G_CALLBACK(on_host_size_allocate), instance);
+    instance->host_layout_overlay_handler_id = g_signal_connect(
+        instance->embedding_overlay, "size-allocate",
+        G_CALLBACK(on_host_size_allocate), instance);
   }
 
   // Create window based on mode (fallback popup path)
@@ -390,13 +711,13 @@ WebViewOverlayWindow *webview_overlay_window_new(
     gtk_window_set_type_hint(instance->window, GDK_WINDOW_TYPE_HINT_UTILITY);
   }
 
-  // Connect to parent window configure only for popup windows.
-  if (!instance->embedded_widget_mode)
-  {
-    instance->parent_configure_handler_id = g_signal_connect(
-        G_OBJECT(instance->parent_window), "configure-event",
-        G_CALLBACK(on_parent_configure_event), instance);
-  }
+  // Connect to parent window configure for popup windows always, and for
+  // embedded overlays so maximize/restore pulls fresh Dart setBounds (via
+  // onHostLayoutChanged). Do NOT reapply cached bounds here — that caused
+  // jitter during live resize.
+  instance->parent_configure_handler_id = g_signal_connect(
+      G_OBJECT(instance->parent_window), "configure-event",
+      G_CALLBACK(on_parent_configure_event), instance);
 
   // In overlay mode, avoid stealing focus from the main app window
   // (this keeps titlebar/window-control interactions reliable).
@@ -487,11 +808,26 @@ static gboolean on_window_delete_event(GtkWidget *widget, GdkEvent *event, gpoin
   return TRUE; // Prevent default destroy
 }
 
-// Handle parent window configure events (moves/resizes)
+// Handle parent window configure events (moves/resizes / maximize / restore)
 static gboolean on_parent_configure_event(GtkWidget *widget, GdkEventConfigure *event, gpointer user_data)
 {
   WebViewOverlayWindow *instance = static_cast<WebViewOverlayWindow *>(user_data);
-  if (!instance || !instance->window)
+  (void)widget;
+  (void)event;
+  if (!instance)
+    return FALSE;
+
+  if (instance->embedded_widget_mode)
+  {
+    // Ask Dart to re-measure the Flutter placeholder after the compositor settles.
+    emit_host_layout_changed(instance);
+    // Also re-assert native GdkWindow placement immediately (Dart may debounce).
+    force_overlay_child_gdk_window_bounds(instance);
+    g_idle_add(idle_force_overlay_child_bounds, instance);
+    return FALSE;
+  }
+
+  if (!instance->window)
     return FALSE;
 
   // Only reposition if window is visible
@@ -506,15 +842,11 @@ static gboolean on_parent_configure_event(GtkWidget *widget, GdkEventConfigure *
     // Reposition loops can fight compositor placement on Wayland/X11 WMs.
     return FALSE;
   }
-  else
-  {
-    // Overlay mode is driven by Flutter setBounds updates.
-    // Reapplying cached bounds here can push stale geometry during live
-    // resize (old size first, then new), which causes visible jitter.
-    return FALSE;
-  }
 
-  return FALSE; // Let other handlers process the event too
+  // Overlay popup mode is driven by Flutter setBounds updates.
+  // Reapplying cached bounds here can push stale geometry during live
+  // resize (old size first, then new), which causes visible jitter.
+  return FALSE;
 }
 
 static gboolean on_window_key_press_event(GtkWidget *widget, GdkEventKey *event, gpointer user_data)
@@ -557,6 +889,22 @@ void webview_overlay_window_destroy(WebViewOverlayWindow *instance)
     g_signal_handler_disconnect(G_OBJECT(instance->embedding_overlay),
                                 instance->child_position_handler_id);
     instance->child_position_handler_id = 0;
+  }
+
+  if (instance->host_layout_overlay_handler_id > 0 &&
+      instance->embedding_overlay &&
+      GTK_IS_WIDGET(instance->embedding_overlay))
+  {
+    g_signal_handler_disconnect(G_OBJECT(instance->embedding_overlay),
+                                instance->host_layout_overlay_handler_id);
+    instance->host_layout_overlay_handler_id = 0;
+  }
+
+  if (instance->host_layout_flutter_handler_id > 0 && instance->flutter_view)
+  {
+    g_signal_handler_disconnect(GTK_WIDGET(instance->flutter_view),
+                                instance->host_layout_flutter_handler_id);
+    instance->host_layout_flutter_handler_id = 0;
   }
 
   if (instance->webkit_view)
@@ -651,6 +999,40 @@ void webview_overlay_window_hide(WebViewOverlayWindow *instance)
   g_print("🐧 Overlay window hidden (view_id: %ld)\n", instance->view_id);
 }
 
+typedef struct
+{
+  WebViewOverlayWindow *keep;
+} HideOthersData;
+
+static void hide_other_overlay_cb(gpointer key, gpointer value, gpointer user_data)
+{
+  (void)key;
+  HideOthersData *data = static_cast<HideOthersData *>(user_data);
+  WebViewOverlayWindow *other = static_cast<WebViewOverlayWindow *>(value);
+  if (!other || other == data->keep)
+    return;
+  if (!other->embedded_widget_mode)
+    return;
+  if (other->container && gtk_widget_get_visible(other->container))
+  {
+    coord_print(
+        "🐧 Hiding sibling overlay view_id=%ld (keeping %ld)\n",
+        other->view_id,
+        data->keep ? data->keep->view_id : -1);
+    webview_overlay_window_hide(other);
+  }
+}
+
+void webview_overlay_window_hide_others(
+    GHashTable *overlay_windows,
+    WebViewOverlayWindow *keep)
+{
+  if (!overlay_windows || !keep)
+    return;
+  HideOthersData data = {.keep = keep};
+  g_hash_table_foreach(overlay_windows, hide_other_overlay_cb, &data);
+}
+
 void webview_overlay_window_set_bounds(
     WebViewOverlayWindow *instance,
     gint x,
@@ -735,6 +1117,59 @@ void webview_overlay_window_set_bounds(
   }
 }
 
+void webview_overlay_window_set_bounds_from_flutter(
+    WebViewOverlayWindow *instance,
+    gdouble x,
+    gdouble y,
+    gdouble width,
+    gdouble height,
+    gdouble view_width,
+    gdouble view_height,
+    gdouble device_pixel_ratio)
+{
+  if (!instance)
+    return;
+
+  gint overlay_x = 0;
+  gint overlay_y = 0;
+  gint overlay_w = 1;
+  gint overlay_h = 1;
+  convert_flutter_bounds_to_overlay(
+      instance,
+      x,
+      y,
+      width,
+      height,
+      view_width,
+      view_height,
+      device_pixel_ratio,
+      &overlay_x,
+      &overlay_y,
+      &overlay_w,
+      &overlay_h);
+
+  instance->x = overlay_x;
+  instance->y = overlay_y;
+  instance->width = overlay_w;
+  instance->height = overlay_h;
+
+  if (instance->embedded_widget_mode)
+  {
+    apply_embedded_bounds(
+        instance,
+        overlay_x,
+        overlay_y,
+        overlay_w,
+        overlay_h,
+        "Overlay bounds (flutter->overlay)");
+    return;
+  }
+
+  // Non-embedded popup path: reuse integer setter with mapped coords.
+  webview_overlay_window_set_bounds(
+      instance, overlay_x, overlay_y, overlay_w, overlay_h);
+}
+
 void webview_overlay_window_set_bounds_screen(
     WebViewOverlayWindow *instance,
     gint screen_x,
@@ -810,6 +1245,40 @@ WebViewWebKitGTK *webview_overlay_window_get_webkit_view(
   if (!instance)
     return nullptr;
   return instance->webkit_view;
+}
+
+void webview_overlay_window_grab_focus(WebViewOverlayWindow *instance)
+{
+  if (!instance || !instance->webkit_view)
+    return;
+
+  GtkWidget *web_view_widget =
+      webview_webkitgtk_get_widget(instance->webkit_view);
+  if (!web_view_widget)
+    return;
+
+  if (!gtk_widget_get_realized(web_view_widget))
+    gtk_widget_realize(web_view_widget);
+
+  gtk_widget_grab_focus(web_view_widget);
+}
+
+void webview_overlay_window_release_focus(WebViewOverlayWindow *instance)
+{
+  if (!instance || !instance->flutter_view)
+    return;
+
+  GtkWidget *flutter_widget = GTK_WIDGET(instance->flutter_view);
+  if (!flutter_widget)
+    return;
+
+  if (!gtk_widget_get_realized(flutter_widget))
+    gtk_widget_realize(flutter_widget);
+
+  // Give GTK keyboard focus back to FlView so Flutter TextFields (To / Cc /
+  // Subject) receive key events. Without this, grabFocus leaves WebKit as the
+  // focused widget and compose header fields appear to ignore typing.
+  gtk_widget_grab_focus(flutter_widget);
 }
 
 // Position window next to main window (for separate window mode).

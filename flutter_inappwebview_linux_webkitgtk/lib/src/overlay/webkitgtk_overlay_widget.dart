@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview_platform_interface/flutter_inappwebview_platform_interface.dart';
 
@@ -10,8 +11,7 @@ import 'webkitgtk_overlay_hooks.dart';
 import 'webview_controller_webkitgtk.dart';
 
 /// Toggle for verbose Linux WebKit z-order tracing in the terminal.
-/// Always emitted via `debugPrint` so it shows under `flutter run -d linux`.
-const bool kWebKitZOrderTrace = true;
+const bool kWebKitZOrderTrace = kDebugMode;
 
 void _wkz(int viewId, String msg) {
   if (!kWebKitZOrderTrace) return;
@@ -62,7 +62,9 @@ class _WebKitGtkOverlayWidgetState extends State<WebKitGtkOverlayWidget>
   late final int _viewId;
   WebViewControllerWebKitGTK? _controller;
   bool _isInitialized = false;
-  bool _nativeVisible = true;
+  // Start hidden until first successful bounds sync; avoids a brief flash at
+  // (0,0) or stale keep-alive geometry before the placeholder is measured.
+  bool _nativeVisible = false;
   bool _loggedRoute = false;
   String? _loadError;
   final GlobalKey _placeholderKey = GlobalKey();
@@ -71,19 +73,21 @@ class _WebKitGtkOverlayWidgetState extends State<WebKitGtkOverlayWidget>
   ({
     double x,
     double y,
-    double screenX,
-    double screenY,
     double width,
     double height,
+    double viewWidth,
+    double viewHeight,
+    double dpr,
   })?
   _lastSentBounds;
   ({
     double x,
     double y,
-    double screenX,
-    double screenY,
     double width,
     double height,
+    double viewWidth,
+    double viewHeight,
+    double dpr,
   })?
   _pendingBounds;
   Timer? _sendBoundsDebounce;
@@ -93,19 +97,21 @@ class _WebKitGtkOverlayWidgetState extends State<WebKitGtkOverlayWidget>
     ({
       double x,
       double y,
-      double screenX,
-      double screenY,
       double width,
       double height,
+      double viewWidth,
+      double viewHeight,
+      double dpr,
     })
     a,
     ({
       double x,
       double y,
-      double screenX,
-      double screenY,
       double width,
       double height,
+      double viewWidth,
+      double viewHeight,
+      double dpr,
     })
     b,
   ) {
@@ -113,7 +119,10 @@ class _WebKitGtkOverlayWidgetState extends State<WebKitGtkOverlayWidget>
     return (a.x - b.x).abs() < epsilon &&
         (a.y - b.y).abs() < epsilon &&
         (a.width - b.width).abs() < epsilon &&
-        (a.height - b.height).abs() < epsilon;
+        (a.height - b.height).abs() < epsilon &&
+        (a.viewWidth - b.viewWidth).abs() < epsilon &&
+        (a.viewHeight - b.viewHeight).abs() < epsilon &&
+        (a.dpr - b.dpr).abs() < 0.01;
   }
 
   @override
@@ -126,9 +135,9 @@ class _WebKitGtkOverlayWidgetState extends State<WebKitGtkOverlayWidget>
     _channel.setMethodCallHandler(_handleMethodCall);
     _initializeWebView();
     _overlayGeometryListener = () {
-      _scheduleNativeBoundsSync(frames: 2);
+      _lastSentBounds = null;
+      _scheduleNativeBoundsSync(frames: 3);
     };
-    WebKitGtkOverlayHooks.rightInset.addListener(_overlayGeometryListener!);
     WebKitGtkOverlayHooks.layoutEpoch.addListener(_overlayGeometryListener!);
     // Re-evaluate native visibility whenever a root-navigator dialog/popup
     // (e.g. the compose dialog) opens or closes. Needed because shell-nested
@@ -175,6 +184,14 @@ class _WebKitGtkOverlayWidgetState extends State<WebKitGtkOverlayWidget>
       // Webviews inside the dialog itself (composer editor) stay visible.
       if (!isOnRootNav) return false;
     }
+    // Tiny / near-zero slots (prewarm opacity placeholders) must stay natively
+    // hidden — Opacity does not hide GtkOverlay WebKit.
+    final box = context.findRenderObject() as RenderBox?;
+    if (box != null &&
+        box.hasSize &&
+        (box.size.width < 80 || box.size.height < 80)) {
+      return false;
+    }
     return true;
   }
 
@@ -192,7 +209,7 @@ class _WebKitGtkOverlayWidgetState extends State<WebKitGtkOverlayWidget>
       _setNativeVisibility(shouldBeVisible);
     }
     if (shouldBeVisible) {
-      _scheduleNativeBoundsSync(frames: 2);
+      _scheduleNativeBoundsSync(frames: 3);
     }
   }
 
@@ -200,7 +217,6 @@ class _WebKitGtkOverlayWidgetState extends State<WebKitGtkOverlayWidget>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     if (_overlayGeometryListener != null) {
-      WebKitGtkOverlayHooks.rightInset.removeListener(_overlayGeometryListener!);
       WebKitGtkOverlayHooks.layoutEpoch.removeListener(
         _overlayGeometryListener!,
       );
@@ -234,7 +250,36 @@ class _WebKitGtkOverlayWidgetState extends State<WebKitGtkOverlayWidget>
 
   @override
   void didChangeMetrics() {
-    _scheduleNativeBoundsSync(frames: 2);
+    _lastSentBounds = null;
+    _scheduleNativeBoundsSync(frames: 5);
+    // Compositor/GTK allocation often lags Flutter metrics on maximize.
+    for (final delay in const [
+      Duration(milliseconds: 32),
+      Duration(milliseconds: 96),
+      Duration(milliseconds: 200),
+      Duration(milliseconds: 400),
+    ]) {
+      unawaited(
+        Future<void>.delayed(delay, () {
+          if (!mounted) return;
+          _lastSentBounds = null;
+          _syncNativeWindowPosition(bypassDebounce: true);
+        }),
+      );
+    }
+  }
+
+  RenderView? _renderViewFor(BuildContext context) {
+    final flutterView = View.maybeOf(context);
+    if (flutterView != null) {
+      for (final renderView in RendererBinding.instance.renderViews) {
+        if (renderView.flutterView.viewId == flutterView.viewId) {
+          return renderView;
+        }
+      }
+    }
+    final views = RendererBinding.instance.renderViews;
+    return views.isEmpty ? null : views.first;
   }
 
   void _scheduleNativeBoundsSync({int frames = 1}) {
@@ -274,6 +319,10 @@ class _WebKitGtkOverlayWidgetState extends State<WebKitGtkOverlayWidget>
         final name = call.arguments['name'] as String;
         final payload = call.arguments['payload'];
         widget.onMessage(name, payload);
+        break;
+      case 'onHostLayoutChanged':
+        _lastSentBounds = null;
+        _syncNativeWindowPosition(bypassDebounce: true);
         break;
       default:
         throw MissingPluginException();
@@ -441,24 +490,36 @@ class _WebKitGtkOverlayWidgetState extends State<WebKitGtkOverlayWidget>
         if (_lastLayoutConstraints == null ||
             _lastLayoutConstraints != nextConstraints) {
           _lastLayoutConstraints = nextConstraints;
-          _scheduleNativeBoundsSync(frames: 2);
+          _lastSentBounds = null;
+          _scheduleNativeBoundsSync(frames: 3);
         }
 
         return MouseRegion(
           onEnter: (_) => _syncNativeWindowPosition(bypassDebounce: true),
-          child: Container(
-            key: _placeholderKey,
-            color: placeholderColor,
-            width: constraints.maxWidth > 0
-                ? constraints.maxWidth
-                : double.infinity,
-            height: constraints.maxHeight > 0
-                ? constraints.maxHeight
-                : double.infinity,
+          child: Listener(
+            behavior: HitTestBehavior.translucent,
+            onPointerDown: (_) => unawaited(_grabNativeFocus()),
+            child: Container(
+              key: _placeholderKey,
+              color: placeholderColor,
+              width: constraints.maxWidth > 0
+                  ? constraints.maxWidth
+                  : double.infinity,
+              height: constraints.maxHeight > 0
+                  ? constraints.maxHeight
+                  : double.infinity,
+            ),
           ),
         );
       },
     );
+  }
+
+  Future<void> _grabNativeFocus() async {
+    if (!_isInitialized) return;
+    try {
+      await _controller?.grabFocus();
+    } catch (_) {}
   }
 
   void _syncNativeWindowPosition({bool bypassDebounce = false}) {
@@ -475,29 +536,36 @@ class _WebKitGtkOverlayWidgetState extends State<WebKitGtkOverlayWidget>
           placeholderContext.findRenderObject() as RenderBox?;
       if (placeholderBox == null || !placeholderBox.hasSize) return;
 
-      final Offset screenPosition = placeholderBox.localToGlobal(Offset.zero);
+      final RenderView? renderView = _renderViewFor(placeholderContext);
+      if (renderView == null) return;
+
+      // FlView-local via RenderView ancestor — ONLY source for native setBounds.
+      // getTransformTo(null)/dpr often skews left by ~placeholder width on Linux;
+      // never use it for placement (log-only).
+      final Offset viaAncestor = placeholderBox.localToGlobal(
+        Offset.zero,
+        ancestor: renderView,
+      );
+      final dpr = renderView.flutterView.devicePixelRatio;
+      Offset viaGlobalDiff = viaAncestor;
+      try {
+        final Offset placeholderGlobal = MatrixUtils.transformPoint(
+          placeholderBox.getTransformTo(null),
+          Offset.zero,
+        );
+        final Offset viewGlobal = MatrixUtils.transformPoint(
+          renderView.getTransformTo(null),
+          Offset.zero,
+        );
+        viaGlobalDiff = Offset(
+          (placeholderGlobal.dx - viewGlobal.dx) / dpr,
+          (placeholderGlobal.dy - viewGlobal.dy) / dpr,
+        );
+      } catch (_) {}
+
+      final Offset overlayOffset = viaAncestor;
       final Size size = placeholderBox.size;
 
-      RenderBox? rootBox = placeholderBox;
-      RenderBox? currentBox = placeholderBox.parent as RenderBox?;
-
-      while (currentBox != null) {
-        if (currentBox.attached) {
-          rootBox = currentBox;
-        }
-        if (currentBox.parent is! RenderBox) {
-          break;
-        }
-        currentBox = currentBox.parent as RenderBox?;
-      }
-
-      Offset windowRelativePosition = screenPosition;
-      if (rootBox != null && rootBox != placeholderBox) {
-        final Offset rootScreenPosition = rootBox.localToGlobal(Offset.zero);
-        windowRelativePosition = screenPosition - rootScreenPosition;
-      }
-
-      // Placeholder size already reflects Sentria overlay padding / inline column.
       final double effectiveWidth = size.width;
       final double effectiveHeight = size.height;
 
@@ -505,13 +573,18 @@ class _WebKitGtkOverlayWidgetState extends State<WebKitGtkOverlayWidget>
         return;
       }
 
+      final logicalViewSize = renderView.size;
+      final media = MediaQuery.maybeOf(placeholderContext);
+      final appSize = media?.size;
+
       final bounds = (
-        x: windowRelativePosition.dx,
-        y: windowRelativePosition.dy,
-        screenX: screenPosition.dx,
-        screenY: screenPosition.dy,
+        x: overlayOffset.dx,
+        y: overlayOffset.dy,
         width: effectiveWidth,
         height: effectiveHeight,
+        viewWidth: logicalViewSize.width,
+        viewHeight: logicalViewSize.height,
+        dpr: dpr,
       );
       if (!bypassDebounce &&
           _lastSentBounds != null &&
@@ -523,31 +596,44 @@ class _WebKitGtkOverlayWidgetState extends State<WebKitGtkOverlayWidget>
         ({
           double x,
           double y,
-          double screenX,
-          double screenY,
           double width,
           double height,
+          double viewWidth,
+          double viewHeight,
+          double dpr,
         })
         target,
       ) {
         if (!mounted || !_nativeVisible) return;
         _pendingBounds = null;
         _lastSentBounds = target;
+        final skew = (viaAncestor - viaGlobalDiff).distance;
+        debugPrint(
+          '🐧[WKZ v$_viewId] COORD app=${appSize?.width.round()}x${appSize?.height.round()} '
+          'view=${target.viewWidth.round()}x${target.viewHeight.round()} dpr=${target.dpr.toStringAsFixed(2)} '
+          'placeholder=${target.width.round()}x${target.height.round()} '
+          'viaAncestor=(${viaAncestor.dx.toStringAsFixed(1)},${viaAncestor.dy.toStringAsFixed(1)}) '
+          'viaGlobalDiff=(${viaGlobalDiff.dx.toStringAsFixed(1)},${viaGlobalDiff.dy.toStringAsFixed(1)}) '
+          'chosen=(${target.x.toStringAsFixed(1)},${target.y.toStringAsFixed(1)}) '
+          'skew=${skew.toStringAsFixed(2)} resizeSync=$bypassDebounce',
+        );
         _wkz(
           _viewId,
-          'setBounds local(${target.x.round()},${target.y.round()}) '
-          'screen(${target.screenX.round()},${target.screenY.round()}) '
+          'setBounds x=${target.x.round()},y=${target.y.round()} '
           'size=${target.width.round()}x${target.height.round()} '
+          'view=${target.viewWidth.round()}x${target.viewHeight.round()} '
+          'dpr=${target.dpr.toStringAsFixed(2)} '
           'visible=$_nativeVisible',
         );
         _channel.invokeMethod('setBounds', {
           'viewId': _viewId,
-          'x': target.x.round(),
-          'y': target.y.round(),
-          'screenX': target.screenX.round(),
-          'screenY': target.screenY.round(),
-          'width': target.width.round(),
-          'height': target.height.round(),
+          'x': target.x,
+          'y': target.y,
+          'width': target.width,
+          'height': target.height,
+          'viewWidth': target.viewWidth,
+          'viewHeight': target.viewHeight,
+          'devicePixelRatio': target.dpr,
         });
       }
 
@@ -564,6 +650,8 @@ class _WebKitGtkOverlayWidgetState extends State<WebKitGtkOverlayWidget>
           sendBounds(target);
         });
       }
-    } catch (_) {}
+    } catch (e, st) {
+      debugPrint('🐧[WKZ v$_viewId] COORD sync failed: $e\n$st');
+    }
   }
 }

@@ -58,5 +58,14 @@ class WebViewControllerWebKitGTK {
     });
   }
 
+  Future<void> grabFocus() async {
+    await _channel.invokeMethod<void>('grabFocus', {'viewId': _viewId});
+  }
+
+  /// Return GTK keyboard focus to Flutter's FlView (header TextFields).
+  Future<void> releaseFocus() async {
+    await _channel.invokeMethod<void>('releaseFocus', {'viewId': _viewId});
+  }
+
   int get viewId => _viewId;
 }

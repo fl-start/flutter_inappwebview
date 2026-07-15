@@ -128,6 +128,16 @@ class LinuxWebKitGtkInAppWebViewController extends PlatformInAppWebViewControlle
     return handler(payload is List ? payload : [payload]);
   }
 
+  /// Overlay view id used by grabFocus / releaseFocus method-channel calls.
+  @override
+  dynamic getViewId() => _native.viewId;
+
+  /// Compose focus: claim GTK keyboard focus for the TipTap WebKit surface.
+  Future<void> grabFocus() => _native.grabFocus();
+
+  /// Compose focus: return GTK keyboard focus to Flutter's FlView.
+  Future<void> releaseFocus() => _native.releaseFocus();
+
   @override
   Future<void> dispose({bool isKeepAlive = false}) async {
     if (isKeepAlive) return;

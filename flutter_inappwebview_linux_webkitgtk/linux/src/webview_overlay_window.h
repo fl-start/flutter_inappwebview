@@ -2,6 +2,7 @@
 #define WEBVIEW_OVERLAY_WINDOW_H_
 
 #include <flutter_linux/flutter_linux.h>
+#include <glib.h>
 #include <gtk/gtk.h>
 #include "webview_webkitgtk.h"
 
@@ -37,6 +38,8 @@ struct _WebViewOverlayWindow
     gboolean embedded_widget_mode;      // true when attached as child of GtkOverlay
     GtkWidget *embedding_overlay;       // GtkOverlay that hosts Flutter view
     gulong child_position_handler_id;   // ID for "get-child-position" signal on embedding_overlay
+    gulong host_layout_flutter_handler_id; // FlView size-allocate → Dart bounds pull
+    gulong host_layout_overlay_handler_id; // GtkOverlay size-allocate → Dart bounds pull
     gboolean has_applied_screen_bounds;
     gint last_screen_x;
     gint last_screen_y;
@@ -63,6 +66,12 @@ void webview_overlay_window_show(WebViewOverlayWindow *instance);
 // Hide overlay window
 void webview_overlay_window_hide(WebViewOverlayWindow *instance);
 
+// Hide every embedded overlay except [keep]. Prevents a keep-alive / second
+// WebKit surface from painting over the mailbox reader.
+void webview_overlay_window_hide_others(
+    GHashTable *overlay_windows,
+    WebViewOverlayWindow *keep);
+
 // Set overlay window position and size
 void webview_overlay_window_set_bounds(
     WebViewOverlayWindow *instance,
@@ -70,6 +79,19 @@ void webview_overlay_window_set_bounds(
     gint y,
     gint width,
     gint height);
+
+// Set embedded overlay bounds from Flutter-view-local logical coordinates.
+// view_* and device_pixel_ratio map logical FlView space onto GtkOverlay
+// allocation (handles HiDPI / FlView inset inside the host overlay).
+void webview_overlay_window_set_bounds_from_flutter(
+    WebViewOverlayWindow *instance,
+    gdouble x,
+    gdouble y,
+    gdouble width,
+    gdouble height,
+    gdouble view_width,
+    gdouble view_height,
+    gdouble device_pixel_ratio);
 
 // Set overlay bounds in absolute screen coordinates.
 void webview_overlay_window_set_bounds_screen(
@@ -82,6 +104,14 @@ void webview_overlay_window_set_bounds_screen(
 // Get the WebKitGTK view instance
 WebViewWebKitGTK *webview_overlay_window_get_webkit_view(
     WebViewOverlayWindow *instance);
+
+// Move keyboard focus to the embedded WebKit editor (compose body).
+void webview_overlay_window_grab_focus(WebViewOverlayWindow *instance);
+
+// Return keyboard focus to Flutter's FlView (compose To / Cc / Subject fields).
+// Required on Linux because GtkOverlay WebKit keeps GTK focus after grabFocus
+// until something explicitly gives it back to FlView.
+void webview_overlay_window_release_focus(WebViewOverlayWindow *instance);
 
 // Position window next to main window (for separate window mode).
 // Optional main_*: if main_width and main_height > 0, use (main_x, main_y, main_width, main_height)

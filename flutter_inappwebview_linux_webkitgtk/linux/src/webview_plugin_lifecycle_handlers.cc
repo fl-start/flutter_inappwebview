@@ -3,6 +3,7 @@
 #include <flutter_linux/flutter_linux.h>
 #include <gtk/gtk.h>
 #include <gdk/gdk.h>
+#include <math.h>
 
 #include "webview_overlay_window.h"
 #include "webview_webkitgtk.h"
@@ -289,6 +290,7 @@ bool webview_plugin_try_handle_lifecycle_method(
     }
     else if (g_strcmp0(method, kMethodShow) == 0)
     {
+      webview_overlay_window_hide_others(overlay_windows, overlay_window);
       webview_overlay_window_show(overlay_window);
     }
     else
@@ -348,6 +350,41 @@ bool webview_plugin_try_handle_lifecycle_method(
     return true;
   }
 
+  if (g_strcmp0(method, "grabFocus") == 0 ||
+      g_strcmp0(method, "releaseFocus") == 0)
+  {
+    FlValue *view_id_value = fl_value_lookup_string(args, "viewId");
+
+    if (view_id_value == nullptr || fl_value_get_type(view_id_value) != FL_VALUE_TYPE_INT)
+    {
+      *out_response = FL_METHOD_RESPONSE(fl_method_error_response_new(
+          "INVALID_ARGUMENT", "viewId must be an integer", nullptr));
+
+      return true;
+    }
+
+    gint64 view_id = fl_value_get_int(view_id_value);
+    gpointer view_id_key = GSIZE_TO_POINTER((gsize)view_id);
+    WebViewOverlayWindow *overlay_window = (WebViewOverlayWindow *)g_hash_table_lookup(
+        overlay_windows, view_id_key);
+
+    if (!overlay_window)
+    {
+      *out_response = FL_METHOD_RESPONSE(fl_method_error_response_new(
+          "NOT_FOUND", "Overlay window not found", nullptr));
+
+      return true;
+    }
+
+    if (g_strcmp0(method, "releaseFocus") == 0)
+      webview_overlay_window_release_focus(overlay_window);
+    else
+      webview_overlay_window_grab_focus(overlay_window);
+    *out_response = FL_METHOD_RESPONSE(fl_method_success_response_new(nullptr));
+
+    return true;
+  }
+
   if (g_strcmp0(method, kMethodPositionNextToMain) == 0 || g_strcmp0(method, kMethodSetBounds) == 0)
   {
     FlValue *view_id_value = fl_value_lookup_string(args, "viewId");
@@ -378,11 +415,15 @@ bool webview_plugin_try_handle_lifecycle_method(
 
     if (v && fl_value_get_type(v) == FL_VALUE_TYPE_INT)
       width = fl_value_get_int(v);
+    else if (v && fl_value_get_type(v) == FL_VALUE_TYPE_FLOAT)
+      width = (gint)lround(fl_value_get_float(v));
 
     v = fl_value_lookup_string(args, "height");
 
     if (v && fl_value_get_type(v) == FL_VALUE_TYPE_INT)
       height = fl_value_get_int(v);
+    else if (v && fl_value_get_type(v) == FL_VALUE_TYPE_FLOAT)
+      height = (gint)lround(fl_value_get_float(v));
 
     if (g_strcmp0(method, kMethodSetBounds) == 0)
     {
@@ -390,13 +431,71 @@ bool webview_plugin_try_handle_lifecycle_method(
       FlValue *y_value = fl_value_lookup_string(args, "y");
       FlValue *screen_x_value = fl_value_lookup_string(args, "screenX");
       FlValue *screen_y_value = fl_value_lookup_string(args, "screenY");
+      FlValue *view_w_value = fl_value_lookup_string(args, "viewWidth");
+      FlValue *view_h_value = fl_value_lookup_string(args, "viewHeight");
+      FlValue *dpr_value = fl_value_lookup_string(args, "devicePixelRatio");
 
-      if (x_value && y_value && fl_value_get_type(x_value) == FL_VALUE_TYPE_INT &&
-          fl_value_get_type(y_value) == FL_VALUE_TYPE_INT)
+      auto fl_as_double = [](FlValue *v) -> gdouble
       {
-        if (screen_x_value && screen_y_value &&
-            fl_value_get_type(screen_x_value) == FL_VALUE_TYPE_INT &&
-            fl_value_get_type(screen_y_value) == FL_VALUE_TYPE_INT)
+        if (!v)
+          return 0.0;
+        switch (fl_value_get_type(v))
+        {
+        case FL_VALUE_TYPE_FLOAT:
+          return fl_value_get_float(v);
+        case FL_VALUE_TYPE_INT:
+          return (gdouble)fl_value_get_int(v);
+        default:
+          return 0.0;
+        }
+      };
+
+      const gboolean has_xy =
+          x_value && y_value &&
+          (fl_value_get_type(x_value) == FL_VALUE_TYPE_INT ||
+           fl_value_get_type(x_value) == FL_VALUE_TYPE_FLOAT) &&
+          (fl_value_get_type(y_value) == FL_VALUE_TYPE_INT ||
+           fl_value_get_type(y_value) == FL_VALUE_TYPE_FLOAT);
+
+      if (has_xy)
+      {
+        // GtkOverlay embedded WebKit: map Flutter logical coords through the
+        // FlView allocation onto GtkOverlay space (HiDPI / FlView inset safe).
+        if (overlay_window->embedded_widget_mode)
+        {
+          const gdouble fx = fl_as_double(x_value);
+          const gdouble fy = fl_as_double(y_value);
+          const gdouble fw = width > 0 ? (gdouble)width : fl_as_double(fl_value_lookup_string(args, "width"));
+          const gdouble fh = height > 0 ? (gdouble)height : fl_as_double(fl_value_lookup_string(args, "height"));
+          const gdouble view_w = fl_as_double(view_w_value);
+          const gdouble view_h = fl_as_double(view_h_value);
+          gdouble dpr = fl_as_double(dpr_value);
+          if (dpr <= 0.01)
+            dpr = 1.0;
+
+          // Prefer float width/height when Dart sends fractional logical sizes.
+          gdouble use_w = fw;
+          gdouble use_h = fh;
+          FlValue *w_float = fl_value_lookup_string(args, "width");
+          FlValue *h_float = fl_value_lookup_string(args, "height");
+          if (w_float && fl_value_get_type(w_float) == FL_VALUE_TYPE_FLOAT)
+            use_w = fl_value_get_float(w_float);
+          if (h_float && fl_value_get_type(h_float) == FL_VALUE_TYPE_FLOAT)
+            use_h = fl_value_get_float(h_float);
+
+          webview_overlay_window_set_bounds_from_flutter(
+              overlay_window,
+              fx,
+              fy,
+              use_w > 0 ? use_w : 1.0,
+              use_h > 0 ? use_h : 1.0,
+              view_w,
+              view_h,
+              dpr);
+        }
+        else if (screen_x_value && screen_y_value &&
+                 fl_value_get_type(screen_x_value) == FL_VALUE_TYPE_INT &&
+                 fl_value_get_type(screen_y_value) == FL_VALUE_TYPE_INT)
         {
           webview_overlay_window_set_bounds_screen(
               overlay_window,
@@ -409,12 +508,15 @@ bool webview_plugin_try_handle_lifecycle_method(
         {
           webview_overlay_window_set_bounds(
               overlay_window,
-              fl_value_get_int(x_value),
-              fl_value_get_int(y_value),
+              (gint)lround(fl_as_double(x_value)),
+              (gint)lround(fl_as_double(y_value)),
               width,
               height);
         }
 
+        // One visible GtkOverlay WebKit at a time — keep-alive composer must
+        // not stay painted over the mailbox reader (intermittent dual overlay).
+        webview_overlay_window_hide_others(overlay_windows, overlay_window);
         webview_overlay_window_show(overlay_window);
       }
     }
