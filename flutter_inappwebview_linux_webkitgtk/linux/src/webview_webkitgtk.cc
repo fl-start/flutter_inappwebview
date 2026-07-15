@@ -266,7 +266,7 @@ void webview_webkitgtk_load_url(WebViewWebKitGTK *instance,
   if (headers_map_or_null &&
       fl_value_get_type(headers_map_or_null) == FL_VALUE_TYPE_MAP)
   {
-    SoupMessageHeaders *headers = soup_message_headers_new(SOUP_MESSAGE_HEADERS_REQUEST);
+    SoupMessageHeaders *headers = webkit_uri_request_get_http_headers(request);
     const size_t count = fl_value_get_length(headers_map_or_null);
     for (size_t i = 0; i < count; i++)
     {
@@ -276,12 +276,10 @@ void webview_webkitgtk_load_url(WebViewWebKitGTK *instance,
           fl_value_get_type(name) == FL_VALUE_TYPE_STRING &&
           fl_value_get_type(value) == FL_VALUE_TYPE_STRING)
       {
-        soup_message_headers_append(headers, fl_value_get_string(name),
-                                    fl_value_get_string(value));
+        soup_message_headers_replace(headers, fl_value_get_string(name),
+                                     fl_value_get_string(value));
       }
     }
-    webkit_uri_request_set_http_headers(request, headers);
-    soup_message_headers_unref(headers);
   }
   webkit_web_view_load_request(instance->web_view, request);
   g_object_unref(request);
