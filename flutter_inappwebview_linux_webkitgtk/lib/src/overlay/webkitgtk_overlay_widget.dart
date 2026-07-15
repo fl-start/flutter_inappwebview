@@ -174,7 +174,7 @@ class _WebKitGtkOverlayWidgetState extends State<WebKitGtkOverlayWidget>
   /// itself, e.g. the composer editor) stay visible.
   bool _computeShouldBeVisible() {
     if (!mounted) return false;
-    if (!TickerMode.of(context)) return false;
+    if (!TickerMode.valuesOf(context).enabled) return false;
     final route = ModalRoute.of(context);
     if (route != null && !route.isCurrent) return false;
     if (WebKitGtkOverlayHooks.isAnyRootPopupOpen) {

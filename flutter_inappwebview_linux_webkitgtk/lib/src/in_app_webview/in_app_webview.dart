@@ -1,7 +1,8 @@
+// ignore_for_file: deprecated_member_use
+
 import 'package:flutter/widgets.dart';
 import 'package:flutter_inappwebview_platform_interface/flutter_inappwebview_platform_interface.dart';
 
-import '../overlay/webkitgtk_keep_alive_pool.dart';
 import '../overlay/webkitgtk_overlay_widget.dart';
 import 'in_app_webview_controller.dart';
 
