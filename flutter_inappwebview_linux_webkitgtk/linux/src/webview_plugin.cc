@@ -2,6 +2,7 @@
 // This file handles plugin registration with Flutter
 
 #include "webview_plugin.h"
+#include <flutter_inappwebview_linux_webkitgtk/flutter_inappwebview_linux_webkitgtk_plugin.h>
 #include <flutter_linux/flutter_linux.h>
 #include <gtk/gtk.h>
 #include <gdk/gdk.h>

@@ -7,6 +7,7 @@
 #include <webkit2/webkit2.h>
 #include <jsc/jsc.h>
 #include <gtk/gtk.h>
+#include <libsoup/soup.h>
 #include <string.h>
 
 typedef struct _ScriptHandlerUserData
@@ -251,7 +252,8 @@ GtkWidget *webview_webkitgtk_get_widget(WebViewWebKitGTK *instance)
 
 // Load URL
 void webview_webkitgtk_load_url(WebViewWebKitGTK *instance,
-                                const gchar *url)
+                                const gchar *url,
+                                FlValue *headers_map_or_null)
 {
   if (!instance || !instance->web_view || !url)
   {
@@ -260,7 +262,27 @@ void webview_webkitgtk_load_url(WebViewWebKitGTK *instance,
   }
 
   g_print("🐧 Loading URL: %s\n", url);
-  webkit_web_view_load_uri(instance->web_view, url);
+  WebKitURIRequest *request = webkit_uri_request_new(url);
+  if (headers_map_or_null &&
+      fl_value_get_type(headers_map_or_null) == FL_VALUE_TYPE_MAP)
+  {
+    SoupMessageHeaders *headers = webkit_uri_request_get_http_headers(request);
+    const size_t count = fl_value_get_length(headers_map_or_null);
+    for (size_t i = 0; i < count; i++)
+    {
+      FlValue *name = fl_value_get_map_key(headers_map_or_null, i);
+      FlValue *value = fl_value_get_map_value(headers_map_or_null, i);
+      if (name && value &&
+          fl_value_get_type(name) == FL_VALUE_TYPE_STRING &&
+          fl_value_get_type(value) == FL_VALUE_TYPE_STRING)
+      {
+        soup_message_headers_replace(headers, fl_value_get_string(name),
+                                     fl_value_get_string(value));
+      }
+    }
+  }
+  webkit_web_view_load_request(instance->web_view, request);
+  g_object_unref(request);
 }
 
 // Load HTML

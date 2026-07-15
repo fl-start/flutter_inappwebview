@@ -54,7 +54,8 @@ GtkWidget *webview_webkitgtk_get_widget(WebViewWebKitGTK *instance);
 
 // Load URL
 void webview_webkitgtk_load_url(WebViewWebKitGTK *instance,
-                                const gchar *url);
+                                const gchar *url,
+                                FlValue *headers_map_or_null);
 
 // Load HTML
 void webview_webkitgtk_load_html(WebViewWebKitGTK *instance,

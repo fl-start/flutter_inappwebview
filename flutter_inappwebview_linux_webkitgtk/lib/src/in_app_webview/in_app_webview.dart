@@ -100,6 +100,7 @@ class LinuxWebKitGtkInAppWebViewWidget extends PlatformInAppWebViewWidget {
     return WebKitGtkOverlayWidget(
       key: _params.key,
       keepAlive: _params.keepAlive,
+      initialSettings: _params.initialSettings?.toMap(),
       initialUserScripts: _params.initialUserScripts,
       initialUrl: initialUrl,
       initialHtml: initialData?.data,

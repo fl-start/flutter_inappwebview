@@ -62,4 +62,26 @@ void main() {
 
     expect(await WebViewControllerWebKitGTK(11).canGoBack(), isFalse);
   });
+
+  test('dispose destroys a view only once', () async {
+    final controller = WebViewControllerWebKitGTK(13);
+
+    await controller.dispose();
+    await controller.dispose();
+
+    expect(calls, hasLength(1));
+    expect(calls.single.method, 'dispose');
+    expect(calls.single.arguments, {'viewId': 13, 'keepAlive': false});
+  });
+
+  test('keep-alive disposal hides without permanently disposing', () async {
+    final controller = WebViewControllerWebKitGTK(15);
+
+    await controller.dispose(keepAlive: true);
+    await controller.dispose();
+
+    expect(calls.map((call) => call.method), ['dispose', 'dispose']);
+    expect(calls.first.arguments, {'viewId': 15, 'keepAlive': true});
+    expect(calls.last.arguments, {'viewId': 15, 'keepAlive': false});
+  });
 }

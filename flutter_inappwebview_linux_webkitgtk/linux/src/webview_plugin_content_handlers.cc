@@ -21,6 +21,7 @@ bool webview_plugin_try_handle_content_method(
   {
     FlValue *view_id_value = fl_value_lookup_string(args, "viewId");
     FlValue *url_value = fl_value_lookup_string(args, "url");
+    FlValue *headers_value = fl_value_lookup_string(args, "headers");
 
     if (view_id_value == nullptr || fl_value_get_type(view_id_value) != FL_VALUE_TYPE_INT)
     {
@@ -50,7 +51,7 @@ bool webview_plugin_try_handle_content_method(
       return true;
     }
 
-    webview_webkitgtk_load_url(overlay_window->webkit_view, url);
+    webview_webkitgtk_load_url(overlay_window->webkit_view, url, headers_value);
     *out_response = FL_METHOD_RESPONSE(fl_method_success_response_new(nullptr));
 
     return true;
