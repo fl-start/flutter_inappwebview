@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview_linux_webkitgtk/flutter_inappwebview_linux_webkitgtk.dart';
@@ -49,6 +51,37 @@ void main() {
     expect(settings['javaScriptEnabled'], isFalse);
     expect(settings['incognito'], isTrue);
 
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('navigation policy is returned to the native caller', (
+    tester,
+  ) async {
+    final platformWidget = LinuxWebKitGtkInAppWebViewWidget(
+      PlatformInAppWebViewWidgetCreationParams(
+        shouldOverrideUrlLoading: (_, _) async => NavigationActionPolicy.CANCEL,
+      ),
+    );
+    await tester.pumpWidget(
+      MaterialApp(home: Builder(builder: platformWidget.build)),
+    );
+    await tester.pump();
+
+    final reply = Completer<ByteData?>();
+    await messenger.handlePlatformMessage(
+      channel.name,
+      const StandardMethodCodec().encodeMethodCall(
+        const MethodCall('shouldOverrideUrlLoading', {
+          'url': 'https://example.test/blocked',
+        }),
+      ),
+      reply.complete,
+    );
+
+    expect(
+      const StandardMethodCodec().decodeEnvelope((await reply.future)!),
+      NavigationActionPolicy.CANCEL.toNativeValue(),
+    );
     await tester.pumpWidget(const SizedBox.shrink());
   });
 }

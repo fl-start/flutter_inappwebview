@@ -31,8 +31,8 @@ class WebKitGtkOverlayWidget extends StatefulWidget {
   final void Function(String url) onLoadStart;
   final void Function(String url) onLoadStop;
   final void Function(String url, int code, String message) onLoadError;
-  final void Function(String url) shouldOverrideUrlLoading;
-  final void Function(String name, dynamic payload) onMessage;
+  final Future<int> Function(String url) shouldOverrideUrlLoading;
+  final Future<dynamic> Function(String name, dynamic payload) onMessage;
   final void Function(WebViewControllerWebKitGTK controller) onWebViewCreated;
   final Map<String, String>? initialHeaders;
 
@@ -317,11 +317,13 @@ class _WebKitGtkOverlayWidgetState extends State<WebKitGtkOverlayWidget>
         });
         widget.onLoadError(url, code, message);
         break;
+      case 'shouldOverrideUrlLoading':
+        final url = call.arguments['url'] as String;
+        return widget.shouldOverrideUrlLoading(url);
       case 'onMessage':
         final name = call.arguments['name'] as String;
         final payload = call.arguments['payload'];
-        widget.onMessage(name, payload);
-        break;
+        return widget.onMessage(name, payload);
       case 'onHostLayoutChanged':
         _lastSentBounds = null;
         _syncNativeWindowPosition(bypassDebounce: true);

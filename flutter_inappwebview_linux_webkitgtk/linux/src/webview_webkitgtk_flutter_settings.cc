@@ -9,6 +9,39 @@
 
 namespace
 {
+  struct NavigationDecisionContext
+  {
+    WebKitPolicyDecision *decision;
+  };
+
+  void on_navigation_policy_result(GObject *source_object,
+                                   GAsyncResult *result,
+                                   gpointer user_data)
+  {
+    auto *context = static_cast<NavigationDecisionContext *>(user_data);
+    g_autoptr(GError) error = nullptr;
+    g_autoptr(FlMethodResponse) response = fl_method_channel_invoke_method_finish(
+        FL_METHOD_CHANNEL(source_object), result, &error);
+
+    gint64 policy = 1; // ALLOW is the safe compatibility default.
+    if (!error && FL_IS_METHOD_SUCCESS_RESPONSE(response))
+    {
+      FlValue *value = fl_method_success_response_get_result(
+          FL_METHOD_SUCCESS_RESPONSE(response));
+      if (value && fl_value_get_type(value) == FL_VALUE_TYPE_INT)
+        policy = fl_value_get_int(value);
+    }
+
+    if (policy == 0)
+      webkit_policy_decision_ignore(context->decision);
+    else if (policy == 2)
+      webkit_policy_decision_download(context->decision);
+    else
+      webkit_policy_decision_use(context->decision);
+
+    g_object_unref(context->decision);
+    delete context;
+  }
 
   gboolean flutter_map_get_bool(FlValue *map, const gchar *key, gboolean def_val)
   {
@@ -161,6 +194,19 @@ namespace
     if (!inst->flutter_allow_file_access && g_str_has_prefix(uri, "file:"))
     {
       webkit_policy_decision_ignore(decision);
+      return TRUE;
+    }
+
+    if (decision_type == WEBKIT_POLICY_DECISION_TYPE_NAVIGATION_ACTION &&
+        inst->method_channel)
+    {
+      g_autoptr(FlValue) args = fl_value_new_map();
+      fl_value_set_string_take(args, "url", fl_value_new_string(uri));
+      auto *context = new NavigationDecisionContext{
+          WEBKIT_POLICY_DECISION(g_object_ref(decision))};
+      fl_method_channel_invoke_method(
+          inst->method_channel, "shouldOverrideUrlLoading", args, nullptr,
+          on_navigation_policy_result, context);
       return TRUE;
     }
 
