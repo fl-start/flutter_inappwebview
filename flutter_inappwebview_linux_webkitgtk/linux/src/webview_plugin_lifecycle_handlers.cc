@@ -33,6 +33,7 @@ static FlView *get_flutter_view(FlPluginRegistrar *registrar)
 bool webview_plugin_try_handle_lifecycle_method(
     FlMethodChannel *method_channel,
     FlPluginRegistrar *registrar,
+    WebKitWebContext *shared_context,
     GHashTable *overlay_windows,
     const gchar *method,
     FlValue *args,
@@ -88,7 +89,8 @@ bool webview_plugin_try_handle_lifecycle_method(
 
     FlValue *settings_map = webview_plugin_lookup_settings_map(args);
     WebViewOverlayWindow *overlay_window = webview_overlay_window_new(
-        method_channel, view_id, flutter_view, window_mode, settings_map);
+        method_channel, view_id, flutter_view, window_mode, settings_map,
+        shared_context);
 
     if (!overlay_window)
     {
@@ -163,7 +165,8 @@ bool webview_plugin_try_handle_lifecycle_method(
 
     FlValue *settings_map = webview_plugin_lookup_settings_map(args);
     WebViewOverlayWindow *overlay_window = webview_overlay_window_new(
-        method_channel, view_id, flutter_view, window_mode, settings_map);
+        method_channel, view_id, flutter_view, window_mode, settings_map,
+        shared_context);
 
     if (!overlay_window)
     {

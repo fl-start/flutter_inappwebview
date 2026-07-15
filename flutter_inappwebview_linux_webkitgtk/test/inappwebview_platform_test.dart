@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter_inappwebview_linux_webkitgtk/flutter_inappwebview_linux_webkitgtk.dart';
 import 'package:flutter_inappwebview_platform_interface/flutter_inappwebview_platform_interface.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -26,6 +27,24 @@ void main() {
         const PlatformInAppWebViewControllerCreationParams(id: 42),
       ),
       isA<LinuxWebKitGtkInAppWebViewController>(),
+    );
+  });
+
+  test('capability metadata reports implemented JavaScript handlers', () {
+    final controller = LinuxWebKitGtkInAppWebViewController.static();
+    expect(
+      controller.isMethodSupported(
+        PlatformInAppWebViewControllerMethod.addJavaScriptHandler,
+        platform: TargetPlatform.linux,
+      ),
+      isTrue,
+    );
+    expect(
+      controller.isMethodSupported(
+        PlatformInAppWebViewControllerMethod.removeJavaScriptHandler,
+        platform: TargetPlatform.linux,
+      ),
+      isTrue,
     );
   });
 }

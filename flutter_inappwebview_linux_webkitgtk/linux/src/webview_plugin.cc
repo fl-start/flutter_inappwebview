@@ -26,6 +26,7 @@ struct _WebViewPlugin
   GObject parent_instance;
   FlMethodChannel *method_channel;
   FlPluginRegistrar *registrar; // Store registrar to get parent window
+  WebKitWebContext *shared_web_context;
   // Hash table of view_id -> overlay window instance (gint64 -> WebViewOverlayWindow*)
   GHashTable *overlay_windows;
 };
@@ -59,6 +60,7 @@ static void webview_plugin_handle_method_call(
   if (webview_plugin_try_handle_lifecycle_method(
           self->method_channel,
           self->registrar,
+          self->shared_web_context,
           self->overlay_windows,
           method,
           args,
@@ -125,6 +127,12 @@ static void webview_plugin_dispose(GObject *object)
     self->registrar = nullptr;
   }
 
+  if (self->shared_web_context)
+  {
+    g_object_unref(self->shared_web_context);
+    self->shared_web_context = nullptr;
+  }
+
   G_OBJECT_CLASS(webview_plugin_parent_class)->dispose(object);
 }
 
@@ -137,6 +145,7 @@ static void webview_plugin_init(WebViewPlugin *self)
 {
   self->method_channel = nullptr;
   self->registrar = nullptr;
+  self->shared_web_context = webkit_web_context_new();
   // Create hash table for overlay windows (key: gint64 as gpointer, value: WebViewOverlayWindow*)
   self->overlay_windows = g_hash_table_new_full(
       platform_view_hash, // Reusing hash/equal functions (they work for gint64 keys)

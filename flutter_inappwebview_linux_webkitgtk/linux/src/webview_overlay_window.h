@@ -54,7 +54,8 @@ WebViewOverlayWindow *webview_overlay_window_new(
     gint64 view_id,
     FlView *flutter_view,
     WebViewWindowMode window_mode,
-    FlValue *initial_settings_map_or_null);
+    FlValue *initial_settings_map_or_null,
+    WebKitWebContext *shared_context_or_null);
 
 // Destroy overlay window
 void webview_overlay_window_destroy(

@@ -245,7 +245,9 @@ namespace
 
 } // namespace
 
-WebKitWebContext *webview_webkitgtk_create_context_from_flutter_settings(FlValue *map)
+WebKitWebContext *webview_webkitgtk_create_context_from_flutter_settings(
+    FlValue *map,
+    WebKitWebContext *shared_context)
 {
   const gboolean incognito = flutter_map_get_bool(map, "incognito", FALSE);
 
@@ -258,7 +260,9 @@ WebKitWebContext *webview_webkitgtk_create_context_from_flutter_settings(FlValue
   }
   else
   {
-    ctx = webkit_web_context_new();
+    ctx = shared_context
+              ? WEBKIT_WEB_CONTEXT(g_object_ref(shared_context))
+              : webkit_web_context_new();
   }
 
   apply_context_level_from_map(ctx, map);

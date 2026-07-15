@@ -1304,6 +1304,7 @@ abstract class PlatformInAppWebViewController extends PlatformInterface
     platforms: [
       AndroidPlatform(),
       IOSPlatform(),
+      LinuxPlatform(),
       MacOSPlatform(),
       WebPlatform(),
       WindowsPlatform(),
@@ -1329,6 +1330,7 @@ abstract class PlatformInAppWebViewController extends PlatformInterface
     platforms: [
       AndroidPlatform(),
       IOSPlatform(),
+      LinuxPlatform(),
       MacOSPlatform(),
       WebPlatform(),
       WindowsPlatform(),

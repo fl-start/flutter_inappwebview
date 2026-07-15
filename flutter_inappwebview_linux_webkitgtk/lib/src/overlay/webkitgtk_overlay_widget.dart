@@ -92,7 +92,7 @@ class _WebKitGtkOverlayWidgetState extends State<WebKitGtkOverlayWidget>
     double dpr,
   })?
   _pendingBounds;
-  Timer? _sendBoundsDebounce;
+  bool _boundsSendScheduled = false;
   Size? _lastLayoutConstraints;
 
   static bool _boundsNearlyEqual(
@@ -227,7 +227,7 @@ class _WebKitGtkOverlayWidgetState extends State<WebKitGtkOverlayWidget>
       WebKitGtkOverlayHooks.rootPopupCount.removeListener(_modalScopeListener!);
       _modalScopeListener = null;
     }
-    _sendBoundsDebounce?.cancel();
+    _pendingBounds = null;
     _nativeVisible = false;
     _setNativeVisibility(false);
     _disposeWebView();
@@ -401,7 +401,6 @@ class _WebKitGtkOverlayWidgetState extends State<WebKitGtkOverlayWidget>
     if (_controller == null) return;
     if (!visible) {
       // Drop any queued bounds so the debounced send can't re-show us.
-      _sendBoundsDebounce?.cancel();
       _pendingBounds = null;
     }
     _wkz(_viewId, 'native ${visible ? "SHOW" : "HIDE"}');
@@ -640,13 +639,14 @@ class _WebKitGtkOverlayWidgetState extends State<WebKitGtkOverlayWidget>
       }
 
       if (bypassDebounce) {
-        _sendBoundsDebounce?.cancel();
         _pendingBounds = null;
         sendBounds(bounds);
       } else {
         _pendingBounds = bounds;
-        _sendBoundsDebounce?.cancel();
-        _sendBoundsDebounce = Timer(const Duration(milliseconds: 1), () {
+        if (_boundsSendScheduled) return;
+        _boundsSendScheduled = true;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          _boundsSendScheduled = false;
           final target = _pendingBounds;
           if (!mounted || target == null) return;
           sendBounds(target);

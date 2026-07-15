@@ -178,7 +178,8 @@ static void scheme_content_free(gpointer data)
 WebViewWebKitGTK *webview_webkitgtk_new(
     FlMethodChannel *method_channel,
     gint64 view_id,
-    FlValue *settings_map_or_null)
+    FlValue *settings_map_or_null,
+    WebKitWebContext *shared_context_or_null)
 {
   WebViewWebKitGTK *instance = g_new0(WebViewWebKitGTK, 1);
   instance->method_channel = method_channel;
@@ -189,7 +190,8 @@ WebViewWebKitGTK *webview_webkitgtk_new(
   instance->flutter_geolocation_enabled = FALSE;
 
   instance->web_context =
-      webview_webkitgtk_create_context_from_flutter_settings(settings_map_or_null);
+      webview_webkitgtk_create_context_from_flutter_settings(
+          settings_map_or_null, shared_context_or_null);
 
   // Create UserContentManager for JavaScript message handling
   instance->user_content_manager = webkit_user_content_manager_new();

@@ -581,7 +581,8 @@ WebViewOverlayWindow *webview_overlay_window_new(
     gint64 view_id,
     FlView *flutter_view,
     WebViewWindowMode window_mode,
-    FlValue *initial_settings_map_or_null)
+    FlValue *initial_settings_map_or_null,
+    WebKitWebContext *shared_context_or_null)
 {
   WebViewOverlayWindow *instance = g_new0(WebViewOverlayWindow, 1);
   instance->method_channel = method_channel;
@@ -742,7 +743,8 @@ WebViewOverlayWindow *webview_overlay_window_new(
 
   // Create WebKitWebView instance
   instance->webkit_view =
-      webview_webkitgtk_new(method_channel, view_id, initial_settings_map_or_null);
+      webview_webkitgtk_new(method_channel, view_id, initial_settings_map_or_null,
+                            shared_context_or_null);
   GtkWidget *web_view_widget = webview_webkitgtk_get_widget(instance->webkit_view);
 
   if (web_view_widget)
