@@ -5,20 +5,22 @@ set(PLUGIN_NAME "flutter_inappwebview_linux_webkitgtk_plugin")
 
 find_package(PkgConfig REQUIRED)
 
-pkg_check_modules(WEBKIT2GTK webkit2gtk-4.1)
+pkg_check_modules(WEBKIT2GTK IMPORTED_TARGET webkit2gtk-4.1)
 if(NOT WEBKIT2GTK_FOUND)
-  pkg_check_modules(WEBKIT2GTK webkit2gtk-4.0)
+  pkg_check_modules(WEBKIT2GTK IMPORTED_TARGET webkit2gtk-4.0)
   if(NOT WEBKIT2GTK_FOUND)
     message(FATAL_ERROR "WebKitGTK not found. Install libwebkit2gtk-4.1-dev or libwebkit2gtk-4.0-dev")
   endif()
   message(STATUS "flutter_inappwebview_linux_webkitgtk: Using WebKitGTK 4.0")
+  pkg_check_modules(LIBSOUP REQUIRED IMPORTED_TARGET libsoup-2.4)
 else()
   message(STATUS "flutter_inappwebview_linux_webkitgtk: Using WebKitGTK 4.1")
+  pkg_check_modules(LIBSOUP REQUIRED IMPORTED_TARGET libsoup-3.0)
 endif()
 
-pkg_check_modules(JAVASCRIPTCORE javascriptcoregtk-4.1)
+pkg_check_modules(JAVASCRIPTCORE IMPORTED_TARGET javascriptcoregtk-4.1)
 if(NOT JAVASCRIPTCORE_FOUND)
-  pkg_check_modules(JAVASCRIPTCORE javascriptcoregtk-4.0)
+  pkg_check_modules(JAVASCRIPTCORE IMPORTED_TARGET javascriptcoregtk-4.0)
   if(NOT JAVASCRIPTCORE_FOUND)
     message(FATAL_ERROR "JavaScriptCore not found. Install libjavascriptcoregtk-4.1-dev or libjavascriptcoregtk-4.0-dev")
   endif()
@@ -55,11 +57,9 @@ target_include_directories(${PLUGIN_NAME} PRIVATE
 
 target_link_libraries(${PLUGIN_NAME} PRIVATE flutter)
 target_link_libraries(${PLUGIN_NAME} PRIVATE PkgConfig::GTK)
-target_link_libraries(${PLUGIN_NAME} PRIVATE ${WEBKIT2GTK_LIBRARIES})
-target_link_libraries(${PLUGIN_NAME} PRIVATE ${JAVASCRIPTCORE_LIBRARIES})
-
-target_link_directories(${PLUGIN_NAME} PRIVATE ${WEBKIT2GTK_LIBRARY_DIRS})
-target_compile_options(${PLUGIN_NAME} PRIVATE ${WEBKIT2GTK_CFLAGS_OTHER})
+target_link_libraries(${PLUGIN_NAME} PRIVATE PkgConfig::WEBKIT2GTK)
+target_link_libraries(${PLUGIN_NAME} PRIVATE PkgConfig::JAVASCRIPTCORE)
+target_link_libraries(${PLUGIN_NAME} PRIVATE PkgConfig::LIBSOUP)
 
 set(flutter_inappwebview_linux_webkitgtk_bundled_libraries
   ""

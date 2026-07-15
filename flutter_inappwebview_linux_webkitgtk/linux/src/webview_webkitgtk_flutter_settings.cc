@@ -83,16 +83,21 @@ namespace
     {
       return FALSE;
     }
-    if (g_str_has_prefix(uri, "http://127.0.0.1") || g_str_has_prefix(uri, "http://localhost") ||
-        g_str_has_prefix(uri, "https://127.0.0.1") || g_str_has_prefix(uri, "https://localhost"))
-    {
-      return TRUE;
-    }
-    if (g_str_has_prefix(uri, "http://[::1]") || g_str_has_prefix(uri, "https://[::1]"))
-    {
-      return TRUE;
-    }
-    return FALSE;
+    g_autoptr(GError) error = nullptr;
+    g_autoptr(GUri) parsed = g_uri_parse(uri, G_URI_FLAGS_PARSE_RELAXED, &error);
+    if (!parsed)
+      return FALSE;
+
+    const gchar *scheme = g_uri_get_scheme(parsed);
+    const gchar *host = g_uri_get_host(parsed);
+    if (!scheme || !host ||
+        (g_ascii_strcasecmp(scheme, "http") != 0 &&
+         g_ascii_strcasecmp(scheme, "https") != 0))
+      return FALSE;
+
+    return g_ascii_strcasecmp(host, "localhost") == 0 ||
+           g_strcmp0(host, "127.0.0.1") == 0 ||
+           g_strcmp0(host, "::1") == 0;
   }
 
   gboolean uri_is_remote_http_or_https(const gchar *uri)
@@ -101,7 +106,12 @@ namespace
     {
       return FALSE;
     }
-    return g_str_has_prefix(uri, "http://") || g_str_has_prefix(uri, "https://");
+    g_autoptr(GUri) parsed = g_uri_parse(uri, G_URI_FLAGS_PARSE_RELAXED, nullptr);
+    if (!parsed)
+      return FALSE;
+    const gchar *scheme = g_uri_get_scheme(parsed);
+    return scheme && (g_ascii_strcasecmp(scheme, "http") == 0 ||
+                      g_ascii_strcasecmp(scheme, "https") == 0);
   }
 
   extern "C" gboolean webview_flutter_on_decide_policy(WebKitWebView *web_view,

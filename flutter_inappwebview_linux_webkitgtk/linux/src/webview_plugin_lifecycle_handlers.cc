@@ -223,7 +223,7 @@ bool webview_plugin_try_handle_lifecycle_method(
     {
       webview_webkitgtk_apply_flutter_settings_map(overlay_window->webkit_view, settings_map_open);
     }
-    webview_webkitgtk_load_url(overlay_window->webkit_view, url);
+    webview_webkitgtk_load_url(overlay_window->webkit_view, url, nullptr);
     double zoom = 0.75;
     FlValue *zoom_value = fl_value_lookup_string(args, "zoom");
 

@@ -24,8 +24,8 @@ class WebKitGtkKeepAlivePool {
     _entries[keepAliveId] = _Entry(viewId: viewId, controller: controller);
   }
 
-  static void release(String keepAliveId) {
-    _entries.remove(keepAliveId);
+  static WebViewControllerWebKitGTK? release(String keepAliveId) {
+    return _entries.remove(keepAliveId)?.controller;
   }
 }
 

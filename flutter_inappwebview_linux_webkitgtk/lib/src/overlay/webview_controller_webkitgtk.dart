@@ -4,6 +4,7 @@ class WebViewControllerWebKitGTK {
   static const MethodChannel _channel = MethodChannel('webview_webkitgtk');
 
   final int _viewId;
+  bool _disposed = false;
 
   WebViewControllerWebKitGTK(this._viewId);
 
@@ -65,6 +66,15 @@ class WebViewControllerWebKitGTK {
   /// Return GTK keyboard focus to Flutter's FlView (header TextFields).
   Future<void> releaseFocus() async {
     await _channel.invokeMethod<void>('releaseFocus', {'viewId': _viewId});
+  }
+
+  Future<void> dispose({bool keepAlive = false}) async {
+    if (_disposed) return;
+    await _channel.invokeMethod<void>('dispose', {
+      'viewId': _viewId,
+      'keepAlive': keepAlive,
+    });
+    if (!keepAlive) _disposed = true;
   }
 
   int get viewId => _viewId;

@@ -3,6 +3,7 @@ import 'dart:collection';
 import 'package:flutter_inappwebview_platform_interface/flutter_inappwebview_platform_interface.dart';
 
 import '../overlay/webview_controller_webkitgtk.dart';
+import '../overlay/webkitgtk_keep_alive_pool.dart';
 
 class LinuxWebKitGtkInAppWebViewControllerCreationParams
     extends PlatformInAppWebViewControllerCreationParams {
@@ -139,7 +140,14 @@ class LinuxWebKitGtkInAppWebViewController extends PlatformInAppWebViewControlle
   Future<void> releaseFocus() => _native.releaseFocus();
 
   @override
+  Future<void> disposeKeepAlive(InAppWebViewKeepAlive keepAlive) async {
+    final controller = WebKitGtkKeepAlivePool.release(keepAlive.id);
+    await controller?.dispose();
+  }
+
+  @override
   Future<void> dispose({bool isKeepAlive = false}) async {
-    if (isKeepAlive) return;
+    await _native.dispose(keepAlive: isKeepAlive);
+    if (!isKeepAlive) _handlers.clear();
   }
 }

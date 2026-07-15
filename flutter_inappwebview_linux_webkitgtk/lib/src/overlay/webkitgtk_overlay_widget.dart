@@ -26,6 +26,7 @@ class WebKitGtkOverlayWidget extends StatefulWidget {
   final String? initialHtml;
   final String? initialHtmlBaseUrl;
   final List<UserScript>? initialUserScripts;
+  final Map<String, dynamic>? initialSettings;
   final InAppWebViewKeepAlive? keepAlive;
   final void Function(String url) onLoadStart;
   final void Function(String url) onLoadStop;
@@ -41,6 +42,7 @@ class WebKitGtkOverlayWidget extends StatefulWidget {
     this.initialHtml,
     this.initialHtmlBaseUrl,
     this.initialUserScripts,
+    this.initialSettings,
     this.keepAlive,
     required this.onLoadStart,
     required this.onLoadStop,
@@ -344,6 +346,7 @@ class _WebKitGtkOverlayWidgetState extends State<WebKitGtkOverlayWidget>
 
       await _channel.invokeMethod('create', {
         'viewId': _viewId,
+        if (widget.initialSettings != null) 'settings': widget.initialSettings,
         if (widget.initialUserScripts != null)
           'userScripts': widget.initialUserScripts!
               .map((script) => script.toMap())
@@ -380,10 +383,7 @@ class _WebKitGtkOverlayWidgetState extends State<WebKitGtkOverlayWidget>
     if (_controller == null) return;
     final keepAliveId = widget.keepAlive?.id;
     try {
-      await _channel.invokeMethod('dispose', {
-        'viewId': _viewId,
-        'keepAlive': keepAliveId != null,
-      });
+      await _controller!.dispose(keepAlive: keepAliveId != null);
       if (keepAliveId != null) {
         WebKitGtkKeepAlivePool.store(
           keepAliveId: keepAliveId,
