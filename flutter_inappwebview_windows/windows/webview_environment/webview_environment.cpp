@@ -133,10 +133,19 @@ namespace flutter_inappwebview_plugin
                   if (!environment_) {
                     return S_OK;
                   }
+                  // During WebView/environment teardown the browser process can
+                  // already be gone; ERROR_NOT_READY (-2147024875) is expected.
+                  auto isTeardownHr = [](HRESULT hr) {
+                    return hr == HRESULT_FROM_WIN32(ERROR_NOT_READY) ||
+                           hr == HRESULT_FROM_WIN32(ERROR_INVALID_STATE);
+                  };
                   if (auto environment13 = environment_.try_query<ICoreWebView2Environment13>()) {
                     auto hr = environment13->GetProcessExtendedInfos(Callback<ICoreWebView2GetProcessExtendedInfosCompletedHandler>(
-                      [this](HRESULT error, wil::com_ptr<ICoreWebView2ProcessExtendedInfoCollection> processCollection) -> HRESULT
+                      [this, isTeardownHr](HRESULT error, wil::com_ptr<ICoreWebView2ProcessExtendedInfoCollection> processCollection) -> HRESULT
                       {
+                        if (isTeardownHr(error)) {
+                          return S_OK;
+                        }
                         if (succeededOrLog(error) && processCollection) {
                           auto browserProcessInfosChangedDetail = BrowserProcessInfosChangedDetail::fromICoreWebView2ProcessExtendedInfoCollection(processCollection);
                           channelDelegate->onProcessInfosChanged(std::move(browserProcessInfosChangedDetail));
@@ -144,12 +153,16 @@ namespace flutter_inappwebview_plugin
                         return S_OK;
                       }).Get());
 
-                    if (succeededOrLog(hr)) {
+                    if (isTeardownHr(hr) || succeededOrLog(hr)) {
                       return S_OK;
                     }
                   }
                   wil::com_ptr<ICoreWebView2ProcessInfoCollection> processCollection;
-                  if (channelDelegate && succeededOrLog(environment8->GetProcessInfos(&processCollection))) {
+                  auto getInfosHr = environment8->GetProcessInfos(&processCollection);
+                  if (isTeardownHr(getInfosHr)) {
+                    return S_OK;
+                  }
+                  if (channelDelegate && succeededOrLog(getInfosHr) && processCollection) {
                     auto browserProcessInfosChangedDetail = BrowserProcessInfosChangedDetail::fromICoreWebView2ProcessInfoCollection(processCollection);
                     channelDelegate->onProcessInfosChanged(std::move(browserProcessInfosChangedDetail));
                   }
@@ -259,12 +272,17 @@ namespace flutter_inappwebview_plugin
       return;
     }
 
+    auto isTeardownHr = [](HRESULT hr) {
+      return hr == HRESULT_FROM_WIN32(ERROR_NOT_READY) ||
+             hr == HRESULT_FROM_WIN32(ERROR_INVALID_STATE);
+    };
+
     if (auto environment13 = environment_.try_query<ICoreWebView2Environment13>()) {
       auto hr = environment13->GetProcessExtendedInfos(Callback<ICoreWebView2GetProcessExtendedInfosCompletedHandler>(
-        [completionHandler](HRESULT error, wil::com_ptr<ICoreWebView2ProcessExtendedInfoCollection> processCollection) -> HRESULT
+        [completionHandler, isTeardownHr](HRESULT error, wil::com_ptr<ICoreWebView2ProcessExtendedInfoCollection> processCollection) -> HRESULT
         {
           std::vector<std::shared_ptr<BrowserProcessInfo>> processInfos = {};
-          if (succeededOrLog(error) && processCollection) {
+          if (!isTeardownHr(error) && succeededOrLog(error) && processCollection) {
             auto browserProcessInfosChangedDetail = BrowserProcessInfosChangedDetail::fromICoreWebView2ProcessExtendedInfoCollection(processCollection);
             processInfos = browserProcessInfosChangedDetail->infos;
           }
@@ -274,14 +292,15 @@ namespace flutter_inappwebview_plugin
           return S_OK;
         }).Get());
 
-      if (succeededOrLog(hr)) {
+      if (isTeardownHr(hr) || succeededOrLog(hr)) {
         return;
       }
     }
     std::vector<std::shared_ptr<BrowserProcessInfo>> processInfos = {};
     if (auto environment8 = environment_.try_query<ICoreWebView2Environment8>()) {
       wil::com_ptr<ICoreWebView2ProcessInfoCollection> processCollection;
-      if (succeededOrLog(environment8->GetProcessInfos(&processCollection))) {
+      auto getInfosHr = environment8->GetProcessInfos(&processCollection);
+      if (!isTeardownHr(getInfosHr) && succeededOrLog(getInfosHr) && processCollection) {
         auto browserProcessInfosChangedDetail = BrowserProcessInfosChangedDetail::fromICoreWebView2ProcessInfoCollection(processCollection);
         processInfos = browserProcessInfosChangedDetail->infos;
       }
