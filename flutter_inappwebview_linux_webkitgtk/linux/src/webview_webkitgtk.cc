@@ -30,14 +30,75 @@ static void script_handler_user_data_free(gpointer data)
 static const char kInAppWebViewBridgeScript[] =
     "(function(){"
     "if(window.flutter_inappwebview&&window.flutter_inappwebview.callHandler){return;}"
+    "var seq=0,pending={};"
     "function wkPost(name,body){"
-    "var msg=(typeof body==='string')?body:JSON.stringify(body);"
-    "window.webkit.messageHandlers[name].postMessage(msg);"
+    "window.webkit.messageHandlers[name].postMessage(body);"
     "}"
     "window.flutter_inappwebview={"
-    "callHandler:function(name,arg){wkPost(name,arg);}"
+    "callHandler:function(name){"
+    "var args=Array.prototype.slice.call(arguments,1),id=String(++seq);"
+    "return new Promise(function(resolve,reject){"
+    "pending[id]={resolve:resolve,reject:reject};"
+    "try{wkPost(name,JSON.stringify({id:id,args:args}));}"
+    "catch(e){delete pending[id];reject(e);}});"
+    "},"
+    "_complete:function(json,error){"
+    "var message=JSON.parse(json),entry=pending[message.id];"
+    "if(!entry){return;}delete pending[message.id];"
+    "if(error||message.error){entry.reject(new Error(error||message.error));}"
+    "else{entry.resolve(message.result);}}"
     "};"
+    "window.dispatchEvent(new Event('flutterInAppWebViewPlatformReady'));"
     "})();";
+
+typedef struct _MessageResultContext
+{
+  WebKitWebView *web_view;
+} MessageResultContext;
+
+static void message_result_context_free(MessageResultContext *context)
+{
+  if (!context)
+    return;
+  g_object_unref(context->web_view);
+  g_free(context);
+}
+
+static void on_dart_message_result(GObject *source_object,
+                                   GAsyncResult *result,
+                                   gpointer user_data)
+{
+  MessageResultContext *context = static_cast<MessageResultContext *>(user_data);
+  g_autoptr(GError) error = nullptr;
+  g_autoptr(FlMethodResponse) response = fl_method_channel_invoke_method_finish(
+      FL_METHOD_CHANNEL(source_object), result, &error);
+
+  const gchar *json = "{\"id\":null,\"result\":null}";
+  const gchar *error_message = nullptr;
+  if (error)
+    error_message = error->message;
+  else if (FL_IS_METHOD_SUCCESS_RESPONSE(response))
+  {
+    FlValue *value = fl_method_success_response_get_result(
+        FL_METHOD_SUCCESS_RESPONSE(response));
+    if (value && fl_value_get_type(value) == FL_VALUE_TYPE_STRING)
+      json = fl_value_get_string(value);
+  }
+  else
+    error_message = "JavaScript handler failed";
+
+  g_autofree gchar *escaped_json = g_strescape(json, nullptr);
+  g_autofree gchar *escaped_error = error_message ? g_strescape(error_message, nullptr) : nullptr;
+  g_autofree gchar *script = g_strdup_printf(
+      "window.flutter_inappwebview&&window.flutter_inappwebview._complete(\"%s\",%s%s%s);",
+      escaped_json,
+      escaped_error ? "\"" : "null",
+      escaped_error ? escaped_error : "",
+      escaped_error ? "\"" : "");
+  webkit_web_view_evaluate_javascript(context->web_view, script, -1, nullptr,
+                                      nullptr, nullptr, nullptr, nullptr, nullptr);
+  message_result_context_free(context);
+}
 
 static void webview_webkitgtk_inject_bridge_script(WebViewWebKitGTK *instance)
 {
@@ -70,8 +131,11 @@ static void webview_webkitgtk_send_on_message(
   fl_value_set_string_take(args, "name", fl_value_new_string(handler_name));
   fl_value_set_string_take(
       args, "payload", fl_value_new_string(payload ? payload : ""));
+  MessageResultContext *context = g_new0(MessageResultContext, 1);
+  context->web_view = WEBKIT_WEB_VIEW(g_object_ref(instance->web_view));
   fl_method_channel_invoke_method(
-      instance->method_channel, "onMessage", args, nullptr, nullptr, nullptr);
+      instance->method_channel, "onMessage", args, nullptr,
+      on_dart_message_result, context);
 }
 
 #ifndef WEBVIEW_ENABLE_DEBUG_PRINTS

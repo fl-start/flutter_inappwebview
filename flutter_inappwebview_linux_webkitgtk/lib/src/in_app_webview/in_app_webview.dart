@@ -129,17 +129,20 @@ class LinuxWebKitGtkInAppWebViewWidget extends PlatformInAppWebViewWidget {
           ),
         );
       },
-      shouldOverrideUrlLoading: (url) {
+      shouldOverrideUrlLoading: (url) async {
         final c = _controller;
         final handler = _params.shouldOverrideUrlLoading;
-        if (c == null || handler == null) return;
-        handler(
+        if (c == null || handler == null) {
+          return NavigationActionPolicy.ALLOW.toNativeValue() ?? 1;
+        }
+        final policy = await handler(
           c,
           NavigationAction(
             request: URLRequest(url: WebUri(url)),
             isForMainFrame: true,
           ),
         );
+        return (policy ?? NavigationActionPolicy.ALLOW).toNativeValue() ?? 1;
       },
       onMessage: (name, payload) async {
         await _controller?.dispatchJavaScriptMessage(name, payload);

@@ -1,4 +1,7 @@
+import 'dart:convert';
+
 import 'package:flutter/services.dart';
+import 'package:flutter_inappwebview_linux_webkitgtk/flutter_inappwebview_linux_webkitgtk.dart';
 import 'package:flutter_inappwebview_linux_webkitgtk/src/overlay/webview_controller_webkitgtk.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -83,5 +86,28 @@ void main() {
     expect(calls.map((call) => call.method), ['dispose', 'dispose']);
     expect(calls.first.arguments, {'viewId': 15, 'keepAlive': true});
     expect(calls.last.arguments, {'viewId': 15, 'keepAlive': false});
+  });
+
+  test('JavaScript handlers receive variadic arguments and return JSON', () async {
+    final controller = LinuxWebKitGtkInAppWebViewController(
+      const LinuxWebKitGtkInAppWebViewControllerCreationParams(id: 17),
+    );
+    controller.addJavaScriptHandler(
+      handlerName: 'sum',
+      callback: (List<dynamic> args) => (args[0] as int) + (args[1] as int),
+    );
+
+    final response = await controller.dispatchJavaScriptMessage(
+      'sum',
+      jsonEncode({
+        'id': 'request-1',
+        'args': [20, 22],
+      }),
+    );
+
+    expect(jsonDecode(response as String), {
+      'id': 'request-1',
+      'result': 42,
+    });
   });
 }

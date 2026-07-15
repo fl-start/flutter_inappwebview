@@ -1,3 +1,6 @@
+// ignore_for_file: deprecated_member_use
+
+import 'dart:convert';
 import 'dart:collection';
 
 import 'package:flutter_inappwebview_platform_interface/flutter_inappwebview_platform_interface.dart';
@@ -124,9 +127,45 @@ class LinuxWebKitGtkInAppWebViewController extends PlatformInAppWebViewControlle
     String handlerName,
     dynamic payload,
   ) async {
+    dynamic decoded = payload;
+    if (payload is String) {
+      try {
+        decoded = jsonDecode(payload);
+      } catch (_) {
+        // Preserve compatibility with plain-string message channels.
+      }
+    }
+    final envelope = decoded is Map ? decoded : null;
+    final args = envelope?['args'] is List
+        ? List<dynamic>.from(envelope!['args'] as List)
+        : (decoded is List ? decoded : <dynamic>[decoded]);
+    final callbackId = envelope?['id'];
     final handler = _handlers[handlerName];
-    if (handler == null) return null;
-    return handler(payload is List ? payload : [payload]);
+    if (handler == null) {
+      return jsonEncode({'id': callbackId, 'result': null});
+    }
+
+    try {
+      dynamic result;
+      if (handler is JavaScriptHandlerCallback) {
+        result = await handler(args);
+      } else if (handler is JavaScriptHandlerFunction) {
+        final requestUrl = await getUrl() ?? WebUri('about:blank');
+        result = await handler(
+          JavaScriptHandlerFunctionData(
+            args: args,
+            isMainFrame: true,
+            origin: WebUri(requestUrl.origin),
+            requestUrl: requestUrl,
+          ),
+        );
+      } else {
+        result = await handler();
+      }
+      return jsonEncode({'id': callbackId, 'result': result});
+    } catch (error) {
+      return jsonEncode({'id': callbackId, 'error': error.toString()});
+    }
   }
 
   /// Overlay view id used by grabFocus / releaseFocus method-channel calls.
