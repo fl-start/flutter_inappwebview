@@ -59,12 +59,14 @@ static void force_overlay_child_gdk_window_bounds(WebViewOverlayWindow *instance
       !gtk_widget_get_realized(instance->embedding_overlay))
     return;
 
-  GtkAllocation overlay_alloc;
-  gtk_widget_get_allocation(instance->embedding_overlay, &overlay_alloc);
-
   // get-child-position returns Overlay-relative coords (last_screen_*).
-  // GtkOverlay then does allocation += overlay_alloc for the child GdkWindow
-  // when that window is parented to the toplevel. Mirror that exactly.
+  // When the child's GdkWindow is parented to the toplevel (not the overlay
+  // GdkWindow), map those coords into toplevel space with
+  // gtk_widget_translate_coordinates.
+  //
+  // Do NOT use gtk_widget_get_allocation() for that origin: allocation is
+  // parent-relative and oscillates (e.g. (0,47) vs (26,70)), which repeatedly
+  // move_resizes WebKit left of the Flutter reader placeholder.
   const gint win_w = MAX(1, instance->last_screen_width);
   const gint win_h = MAX(1, instance->last_screen_height);
 
@@ -72,14 +74,40 @@ static void force_overlay_child_gdk_window_bounds(WebViewOverlayWindow *instance
   GdkWindow *child_gdk = gtk_widget_get_parent_window(instance->container);
   GdkWindow *toplevel_gdk =
       overlay_gdk != nullptr ? gdk_window_get_toplevel(overlay_gdk) : nullptr;
+  GtkWidget *toplevel_widget =
+      gtk_widget_get_toplevel(instance->embedding_overlay);
 
   gint win_x = instance->last_screen_x;
   gint win_y = instance->last_screen_y;
+  gboolean translated = FALSE;
   if (child_gdk && overlay_gdk && toplevel_gdk && child_gdk != overlay_gdk &&
-      gdk_window_get_parent(child_gdk) == toplevel_gdk)
+      gdk_window_get_parent(child_gdk) == toplevel_gdk &&
+      GTK_IS_WIDGET(toplevel_widget) &&
+      gtk_widget_get_realized(toplevel_widget))
   {
-    win_x = overlay_alloc.x + instance->last_screen_x;
-    win_y = overlay_alloc.y + instance->last_screen_y;
+    gint tx = 0;
+    gint ty = 0;
+    if (gtk_widget_translate_coordinates(
+            instance->embedding_overlay,
+            toplevel_widget,
+            instance->last_screen_x,
+            instance->last_screen_y,
+            &tx,
+            &ty))
+    {
+      win_x = tx;
+      win_y = ty;
+      translated = TRUE;
+    }
+    else
+    {
+      // Prefer a resize pass over guessing with unstable allocation math.
+      gtk_widget_queue_resize(instance->embedding_overlay);
+      coord_print(
+          "🐧 GdkWindow translate failed; queue_resize overlay view_id=%ld\n",
+          instance->view_id);
+      return;
+    }
   }
 
   if (child_gdk && overlay_gdk && child_gdk != overlay_gdk)
@@ -93,7 +121,7 @@ static void force_overlay_child_gdk_window_bounds(WebViewOverlayWindow *instance
       gdk_window_move_resize(child_gdk, win_x, win_y, win_w, win_h);
       coord_print(
           "🐧 Forced GdkWindow move_resize: was(%d,%d %dx%d) -> (%d,%d %dx%d) "
-          "signal=(%d,%d) overlay_alloc=(%d,%d) view_id=%ld\n",
+          "signal=(%d,%d) translated=%d view_id=%ld\n",
           cur_x,
           cur_y,
           cur_w,
@@ -104,14 +132,13 @@ static void force_overlay_child_gdk_window_bounds(WebViewOverlayWindow *instance
           win_h,
           instance->last_screen_x,
           instance->last_screen_y,
-          overlay_alloc.x,
-          overlay_alloc.y,
+          translated ? 1 : 0,
           instance->view_id);
     }
     else
     {
       coord_print(
-          "🐧 GdkWindow ok (%d,%d %dx%d) signal=(%d,%d) overlay_alloc=(%d,%d) "
+          "🐧 GdkWindow ok (%d,%d %dx%d) signal=(%d,%d) translated=%d "
           "view_id=%ld\n",
           cur_x,
           cur_y,
@@ -119,8 +146,7 @@ static void force_overlay_child_gdk_window_bounds(WebViewOverlayWindow *instance
           cur_h,
           instance->last_screen_x,
           instance->last_screen_y,
-          overlay_alloc.x,
-          overlay_alloc.y,
+          translated ? 1 : 0,
           instance->view_id);
     }
   }
