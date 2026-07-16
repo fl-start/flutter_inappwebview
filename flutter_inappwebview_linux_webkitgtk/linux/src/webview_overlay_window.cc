@@ -5,16 +5,16 @@
 #include <gdk/gdk.h>
 #include <math.h>
 
-// Always print coordinate traces while debugging Linux overlay placement.
-// (User-facing request: resize/alignment must be diagnosable from the terminal.)
+// Verbose native coordinate traces (off by default; Dart logs layout regions).
 #ifndef WEBVIEW_ENABLE_DEBUG_PRINTS
-#define WEBVIEW_ENABLE_DEBUG_PRINTS 1
+#define WEBVIEW_ENABLE_DEBUG_PRINTS 0
 #endif
 
 #if WEBVIEW_ENABLE_DEBUG_PRINTS
 #define coord_print(...) g_print(__VA_ARGS__)
 #else
 #define coord_print(...) ((void)0)
+#define g_print(...) ((void)0)
 #endif
 
 // Include Wayland-specific headers for display type checking
@@ -123,13 +123,14 @@ static void apply_embedded_bounds(
   if (!instance || !instance->embedded_widget_mode || !instance->container)
     return;
 
-  // Clamp embedded bounds to the host overlay allocation so native WebKit
-  // never overflows the Flutter conversation pane (e.g. when Sentria side panel
-  // opens and available width shrinks).
+  // Soft-clamp to host. When Flutter already maximized but GTK host allocation
+  // still lags, do NOT shrink last_screen_* to the old host size — that left
+  // get-child-position stuck at pre-maximize dimensions after Dart skipped a
+  // duplicate setBounds (it already recorded the larger logical size).
   gint bounded_x = x;
   gint bounded_y = y;
-  gint bounded_width = width;
-  gint bounded_height = height;
+  gint bounded_width = MAX(1, width);
+  gint bounded_height = MAX(1, height);
 
   GtkWidget *host = instance->embedding_overlay;
   if (host && gtk_widget_get_realized(host))
@@ -147,15 +148,18 @@ static void apply_embedded_bounds(
       if (bounded_y > host_h - 1)
         bounded_y = host_h - 1;
 
-      if (bounded_width < 1)
-        bounded_width = 1;
-      if (bounded_height < 1)
-        bounded_height = 1;
-
-      if (bounded_x + bounded_width > host_w)
-        bounded_width = MAX(1, host_w - bounded_x);
-      if (bounded_y + bounded_height > host_h)
-        bounded_height = MAX(1, host_h - bounded_y);
+      // Only shrink when the request already fits the host in both axes
+      // (side-panel / pane shrink). If request exceeds host (maximize lag),
+      // keep Dart's size so GtkOverlay adopts it once the host catches up.
+      const gboolean request_fits_host =
+          bounded_width <= host_w && bounded_height <= host_h;
+      if (request_fits_host)
+      {
+        if (bounded_x + bounded_width > host_w)
+          bounded_width = MAX(1, host_w - bounded_x);
+        if (bounded_y + bounded_height > host_h)
+          bounded_height = MAX(1, host_h - bounded_y);
+      }
     }
   }
 
@@ -198,7 +202,8 @@ static void apply_embedded_bounds(
       gtk_widget_set_hexpand(web_view_widget, TRUE);
       gtk_widget_set_vexpand(web_view_widget, TRUE);
       gtk_widget_set_size_request(web_view_widget, bounded_width, bounded_height);
-      if (gtk_widget_get_realized(web_view_widget))
+  if (gtk_widget_get_realized(web_view_widget) &&
+      gtk_widget_get_visible(web_view_widget))
       {
         GdkRectangle clip = {0, 0, bounded_width, bounded_height};
         gtk_widget_set_clip(web_view_widget, &clip);
@@ -206,7 +211,8 @@ static void apply_embedded_bounds(
     }
   }
 
-  if (gtk_widget_get_realized(instance->container))
+  if (gtk_widget_get_realized(instance->container) &&
+      gtk_widget_get_visible(instance->container))
   {
     GdkRectangle clip = {0, 0, bounded_width, bounded_height};
     gtk_widget_set_clip(instance->container, &clip);
@@ -295,8 +301,6 @@ static void convert_flutter_bounds_to_overlay(
   {
     const gint view_px_w = gtk_widget_get_allocated_width(flutter_widget);
     const gint view_px_h = gtk_widget_get_allocated_height(flutter_widget);
-    const gint host_w = gtk_widget_get_allocated_width(host);
-    const gint host_h = gtk_widget_get_allocated_height(host);
 
     gdouble scale_x = 1.0;
     gdouble scale_y = 1.0;
@@ -339,8 +343,8 @@ static void convert_flutter_bounds_to_overlay(
         flutter_view_h,
         view_px_w,
         view_px_h,
-        host_w,
-        host_h,
+        gtk_widget_get_allocated_width(host),
+        gtk_widget_get_allocated_height(host),
         origin_x,
         origin_y,
         scale_x,
@@ -780,10 +784,10 @@ static gboolean on_parent_configure_event(GtkWidget *widget, GdkEventConfigure *
   if (instance->embedded_widget_mode)
   {
     // Ask Dart to re-measure the Flutter placeholder after the compositor settles.
+    // Do not re-assert cached GdkWindow bounds here — on maximize/restore that
+    // fights fresh Dart setBounds and leaves the WebKit surface misaligned.
     emit_host_layout_changed(instance);
-    // Also re-assert native GdkWindow placement immediately (Dart may debounce).
-    force_overlay_child_gdk_window_bounds(instance);
-    g_idle_add(idle_force_overlay_child_bounds, instance);
+    g_timeout_add(48, idle_force_overlay_child_bounds, instance);
     return FALSE;
   }
 
