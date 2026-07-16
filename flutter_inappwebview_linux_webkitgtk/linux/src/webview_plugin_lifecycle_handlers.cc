@@ -486,15 +486,36 @@ bool webview_plugin_try_handle_lifecycle_method(
           if (h_float && fl_value_get_type(h_float) == FL_VALUE_TYPE_FLOAT)
             use_h = fl_value_get_float(h_float);
 
+          // Prefer edge payload when present (deterministic rounding boundary).
+          FlValue *left_v = fl_value_lookup_string(args, "left");
+          FlValue *top_v = fl_value_lookup_string(args, "top");
+          FlValue *right_v = fl_value_lookup_string(args, "right");
+          FlValue *bottom_v = fl_value_lookup_string(args, "bottom");
+          gdouble use_x = fx;
+          gdouble use_y = fy;
+          if (left_v && top_v && right_v && bottom_v)
+          {
+            use_x = fl_as_double(left_v);
+            use_y = fl_as_double(top_v);
+            use_w = fl_as_double(right_v) - use_x;
+            use_h = fl_as_double(bottom_v) - use_y;
+          }
+
+          FlValue *seq_value = fl_value_lookup_string(args, "sequence");
+          gint64 sequence = 0;
+          if (seq_value && fl_value_get_type(seq_value) == FL_VALUE_TYPE_INT)
+            sequence = fl_value_get_int(seq_value);
+
           webview_overlay_window_set_bounds_from_flutter(
               overlay_window,
-              fx,
-              fy,
+              use_x,
+              use_y,
               use_w > 0 ? use_w : 1.0,
               use_h > 0 ? use_h : 1.0,
               view_w,
               view_h,
-              dpr);
+              dpr,
+              sequence);
         }
         else if (screen_x_value && screen_y_value &&
                  fl_value_get_type(screen_x_value) == FL_VALUE_TYPE_INT &&

@@ -60,6 +60,8 @@ struct _WebViewOverlayWindow
     gboolean has_reported_parent_configure;
     gint last_reported_parent_configure_width;
     gint last_reported_parent_configure_height;
+    // Monotonic setBounds sequence from Dart; ignore stale async updates.
+    gint64 last_bounds_sequence;
 };
 
 // Create overlay window (returns to popup approach since we can't modify window structure)
@@ -99,6 +101,7 @@ void webview_overlay_window_set_bounds(
 // Set embedded overlay bounds from Flutter-view-local logical coordinates.
 // view_* and device_pixel_ratio map logical FlView space onto GtkOverlay
 // allocation (handles HiDPI / FlView inset inside the host overlay).
+// sequence: optional monotonic id from Dart; values <= last applied are ignored.
 void webview_overlay_window_set_bounds_from_flutter(
     WebViewOverlayWindow *instance,
     gdouble x,
@@ -107,7 +110,8 @@ void webview_overlay_window_set_bounds_from_flutter(
     gdouble height,
     gdouble view_width,
     gdouble view_height,
-    gdouble device_pixel_ratio);
+    gdouble device_pixel_ratio,
+    gint64 sequence);
 
 // Set overlay bounds in absolute screen coordinates.
 void webview_overlay_window_set_bounds_screen(
