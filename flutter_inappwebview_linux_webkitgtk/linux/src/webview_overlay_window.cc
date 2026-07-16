@@ -351,13 +351,22 @@ static void convert_flutter_bounds_to_overlay(
         overlay_h,
         device_pixel_ratio);
   }
-  else if (device_pixel_ratio > 0.01 && fabs(device_pixel_ratio - 1.0) > 0.01)
+  else
   {
-    // Fallback when allocations are not available yet.
-    overlay_x = (gint)lround(flutter_x * device_pixel_ratio);
-    overlay_y = (gint)lround(flutter_y * device_pixel_ratio);
-    overlay_w = (gint)lround(flutter_w * device_pixel_ratio);
-    overlay_h = (gint)lround(flutter_h * device_pixel_ratio);
+    // Widgets not realized yet — leave overlay_x/y/w/h at the unscaled
+    // flutter_x/y/w/h passthrough set above.
+    //
+    // This used to multiply by device_pixel_ratio directly, which is wrong
+    // whenever Flutter's reported dpr doesn't match what GTK will actually
+    // render at (e.g. GTK3 has no fractional scale support, so a KDE/GNOME
+    // session set to a non-integer factor like 125% can hand Flutter a dpr
+    // — 1.25, or rounded to 2.0 — that the GtkOverlay/WebKitGTK layer never
+    // uses). That produced a briefly-but-visibly wrong-sized overlay
+    // (e.g. ~1x200px) at startup on fractional-scale displays. Once realized,
+    // the branch above recomputes scale empirically from actual widget pixel
+    // allocations, which is correct regardless of what dpr claims — so this
+    // fallback only needs to hold a reasonable placeholder until then, not a
+    // scaled guess that can be actively wrong.
   }
 
   if (out_x)

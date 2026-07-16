@@ -543,11 +543,22 @@ class _WebKitGtkOverlayWidgetState extends State<WebKitGtkOverlayWidget>
       // FlView-local via RenderView ancestor — ONLY source for native setBounds.
       // getTransformTo(null)/dpr often skews left by ~placeholder width on Linux;
       // never use it for placement (log-only).
-      final Offset viaAncestor = placeholderBox.localToGlobal(
+      //
+      // localToGlobal(ancestor: renderView) lands in RenderView's own
+      // coordinate space, which is physical/device pixels (RenderView hands
+      // physical-pixel layers to the engine) — not Flutter's usual logical
+      // pixels. Divide by dpr to get back to the logical/GTK-allocation units
+      // the native side (and host_w/host_h clamping) expects. At dpr=1.0 this
+      // is a no-op, which is why the bug was invisible except on non-1.0
+      // (including non-integer, e.g. KDE 125%) display scaling.
+      final dpr = renderView.flutterView.devicePixelRatio;
+      final Offset viaAncestorRaw = placeholderBox.localToGlobal(
         Offset.zero,
         ancestor: renderView,
       );
-      final dpr = renderView.flutterView.devicePixelRatio;
+      final Offset viaAncestor = dpr > 0
+          ? Offset(viaAncestorRaw.dx / dpr, viaAncestorRaw.dy / dpr)
+          : viaAncestorRaw;
       Offset viaGlobalDiff = viaAncestor;
       try {
         final Offset placeholderGlobal = MatrixUtils.transformPoint(
