@@ -407,7 +407,10 @@ void webview_webkitgtk_evaluate_javascript(
 
         if (error)
         {
-          g_warning("🐧 JavaScript evaluation error: %s", error->message);
+          if (g_strcmp0(error->message, "Unsupported result type") != 0)
+          {
+            g_warning("🐧 JavaScript evaluation error: %s", error->message);
+          }
           response = FL_METHOD_RESPONSE(fl_method_error_response_new(
               "JAVASCRIPT_ERROR", error->message, nullptr));
           g_error_free(error);
@@ -762,8 +765,11 @@ static void on_load_failed(WebKitWebView *web_view,
   gint error_code = error ? error->code : -1;
   const gchar *error_message = error ? error->message : "Unknown error";
 
-  g_warning("🐧 Load failed: %s (code: %d, message: %s)\n",
-            failing_uri ? failing_uri : "null", error_code, error_message);
+  if (error_code != 102 && error_code != 302)
+  {
+    g_warning("🐧 Load failed: %s (code: %d, message: %s)\n",
+              failing_uri ? failing_uri : "null", error_code, error_message);
+  }
 
   if (!instance->method_channel)
   {

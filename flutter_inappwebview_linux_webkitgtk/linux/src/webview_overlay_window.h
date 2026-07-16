@@ -45,6 +45,21 @@ struct _WebViewOverlayWindow
     gint last_screen_y;
     gint last_screen_width;
     gint last_screen_height;
+    // Last host allocation actually reported to Dart via onHostLayoutChanged.
+    // Guards against a feedback loop: applying (even unchanged) bounds can
+    // call gtk_widget_queue_resize, which fires size-allocate again even when
+    // the allocation doesn't change, which would otherwise re-notify Dart,
+    // which re-applies bounds, forever. See on_host_size_allocate.
+    gboolean has_reported_host_alloc;
+    gint last_reported_host_alloc_width;
+    gint last_reported_host_alloc_height;
+    // Same idea, for on_parent_configure_event (window-level move/resize),
+    // which is a distinct signal from the embedding_overlay's own
+    // size-allocate and must not share its cache (they can legitimately
+    // report different dimensions for the same moment).
+    gboolean has_reported_parent_configure;
+    gint last_reported_parent_configure_width;
+    gint last_reported_parent_configure_height;
 };
 
 // Create overlay window (returns to popup approach since we can't modify window structure)
