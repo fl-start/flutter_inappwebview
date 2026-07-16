@@ -2,11 +2,20 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 import 'webkitgtk_channel_dispatcher.dart';
+import 'webkitgtk_geometry.dart';
 
 /// Optional host-app hooks for GtkOverlay geometry and modal occlusion.
 ///
 /// secMail wires [rightInset], [layoutEpoch], [rootPopupCount], and
 /// [boundsProvider] at startup.
+///
+/// ## Coordinate contract
+///
+/// All geometry exchanged with native `setBounds` is **FlView-local logical
+/// pixels** ([WebKitGtkOverlayGeometry.coordinateSpace]). Host
+/// [boundsProvider] callbacks must return that same space — never raw
+/// `localToGlobal(ancestor: renderView)` physical pixels without dividing by
+/// DPR.
 class WebKitGtkOverlayHooks {
   WebKitGtkOverlayHooks._();
 
@@ -41,17 +50,21 @@ class WebKitGtkOverlayHooks {
   })?
   onNativeBoundsSent;
 
-  /// Optional host-provided reader bounds in logical Flutter-view coordinates.
+  /// Optional per-view host bounds in **FlView-local logical** pixels.
   ///
-  /// When set, the Linux overlay can use these bounds during resize/maximize
-  /// instead of relying only on the internal placeholder, which may lag a frame.
-  static Rect? Function()? boundsProvider;
+  /// Return `null` for views that should measure their own placeholder
+  /// (composer, inactive keep-alives). Only accelerate the mailbox reader
+  /// when its [viewId] matches — never share one rect across all overlays.
+  static Rect? Function(int viewId)? boundsProvider;
 
   /// When true, overlay widgets skip the "wait for stable placeholder" gate and
   /// push [setBounds] immediately (used during maximize/restore).
   static bool forceImmediateBoundsSync = false;
 
-  /// Currently visible embedded reader view id (for host-driven setBounds repair).
+  /// Currently visible embedded **reader** view id (host-driven setBounds repair).
+  ///
+  /// Only the mailbox reader should update this. Composer must not overwrite
+  /// it, or maximize repair would push reader-slot geometry onto the composer.
   static int? activeEmbeddedViewId;
 
   static final List<VoidCallback> _syncHandlers = <VoidCallback>[];
@@ -65,6 +78,9 @@ class WebKitGtkOverlayHooks {
   }
 
   /// Ask every mounted overlay to push setBounds now (maximize / pane resize).
+  ///
+  /// Each overlay measures **its own** placeholder (or host provider for its
+  /// viewId). Handlers must not clobber [activeEmbeddedViewId].
   static void forceSyncAll() {
     forceImmediateBoundsSync = true;
     layoutEpoch.value++;
@@ -76,6 +92,7 @@ class WebKitGtkOverlayHooks {
   /// Last-resort host push when Flutter slot and native bounds diverge.
   ///
   /// Bypasses overlay early-returns that previously left maximize stuck.
+  /// [x]/[y]/[width]/[height] must be FlView-local logical pixels.
   static Future<void> pushSetBounds({
     required double x,
     required double y,
@@ -85,24 +102,38 @@ class WebKitGtkOverlayHooks {
     required double viewHeight,
     required double devicePixelRatio,
     int? viewId,
+    int? sequence,
+    bool visible = true,
   }) async {
     final id = viewId ?? activeEmbeddedViewId;
     if (id == null) return;
     if (width <= 0 || height <= 0) return;
 
-    onNativeBoundsSent?.call(x: x, y: y, width: width, height: height);
+    final geometry = WebKitGtkOverlayGeometry(
+      viewId: id,
+      sequence: sequence ?? DateTime.now().microsecondsSinceEpoch,
+      visible: visible,
+      left: x,
+      top: y,
+      right: x + width,
+      bottom: y + height,
+      viewWidth: viewWidth,
+      viewHeight: viewHeight,
+      devicePixelRatio: devicePixelRatio,
+    ).roundEdges();
+
+    onNativeBoundsSent?.call(
+      x: geometry.left,
+      y: geometry.top,
+      width: geometry.width,
+      height: geometry.height,
+    );
     forceImmediateBoundsSync = true;
     layoutEpoch.value++;
 
-    await WebKitGtkChannelDispatcher.channel.invokeMethod('setBounds', {
-      'viewId': id,
-      'x': x,
-      'y': y,
-      'width': width,
-      'height': height,
-      'viewWidth': viewWidth,
-      'viewHeight': viewHeight,
-      'devicePixelRatio': devicePixelRatio,
-    });
+    await WebKitGtkChannelDispatcher.channel.invokeMethod(
+      'setBounds',
+      geometry.toMethodChannelArgs(),
+    );
   }
 }

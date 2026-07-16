@@ -343,10 +343,20 @@ static void convert_flutter_bounds_to_overlay(
       origin_y = 0;
     }
 
-    overlay_x = origin_x + (gint)lround(flutter_x * scale_x);
-    overlay_y = origin_y + (gint)lround(flutter_y * scale_y);
-    overlay_w = (gint)lround(flutter_w * scale_x);
-    overlay_h = (gint)lround(flutter_h * scale_y);
+    // Round edges then derive size — independent x/y/w/h rounding drifts under
+    // fractional scale (e.g. 125%/150%) and leaves 1px gaps or overshoot.
+    {
+      const gdouble left = (gdouble)origin_x + flutter_x * scale_x;
+      const gdouble top = (gdouble)origin_y + flutter_y * scale_y;
+      const gdouble right = left + flutter_w * scale_x;
+      const gdouble bottom = top + flutter_h * scale_y;
+      overlay_x = (gint)lround(left);
+      overlay_y = (gint)lround(top);
+      const gint right_i = (gint)lround(right);
+      const gint bottom_i = (gint)lround(bottom);
+      overlay_w = MAX(1, right_i - overlay_x);
+      overlay_h = MAX(1, bottom_i - overlay_y);
+    }
 
     coord_print(
         "🐧 Coord map: flutter(%.1f,%.1f %.1fx%.1f) viewLogical=%.1fx%.1f "
@@ -1142,10 +1152,24 @@ void webview_overlay_window_set_bounds_from_flutter(
     gdouble height,
     gdouble view_width,
     gdouble view_height,
-    gdouble device_pixel_ratio)
+    gdouble device_pixel_ratio,
+    gint64 sequence)
 {
   if (!instance)
     return;
+
+  // Ignore stale async updates (sequence 0 = legacy callers without sequencing).
+  if (sequence > 0 && sequence <= instance->last_bounds_sequence)
+  {
+    coord_print(
+        "🐧 setBounds stale seq=%ld <= last=%ld (view_id=%ld) — ignored\n",
+        (long)sequence,
+        (long)instance->last_bounds_sequence,
+        instance->view_id);
+    return;
+  }
+  if (sequence > 0)
+    instance->last_bounds_sequence = sequence;
 
   gint overlay_x = 0;
   gint overlay_y = 0;
