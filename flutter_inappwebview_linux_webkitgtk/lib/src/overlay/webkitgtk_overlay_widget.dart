@@ -611,10 +611,21 @@ class _WebKitGtkOverlayWidgetState extends State<WebKitGtkOverlayWidget>
         size = hostBounds.size;
       } else {
         if (placeholderBox == null || !placeholderBox.hasSize) return;
-        overlayOffset = placeholderBox.localToGlobal(
+        // localToGlobal(ancestor: renderView) lands in RenderView's own
+        // coordinate space, which is physical/device pixels (RenderView hands
+        // physical-pixel layers to the engine) — not Flutter's usual logical
+        // pixels. Divide by dpr to get back to the logical/GTK-allocation units
+        // the native side (and host_w/host_h clamping) expects. At dpr=1.0 this
+        // is a no-op, which is why the bug was invisible except on non-1.0
+        // (including non-integer, e.g. KDE 125%) display scaling.
+        final localDpr = renderView.flutterView.devicePixelRatio;
+        final Offset rawOffset = placeholderBox.localToGlobal(
           Offset.zero,
           ancestor: renderView,
         );
+        overlayOffset = localDpr > 0
+            ? Offset(rawOffset.dx / localDpr, rawOffset.dy / localDpr)
+            : rawOffset;
         size = placeholderBox.size;
       }
 

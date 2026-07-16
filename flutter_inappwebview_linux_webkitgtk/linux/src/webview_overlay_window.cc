@@ -255,10 +255,27 @@ static void on_host_size_allocate(
     gpointer user_data)
 {
   (void)widget;
-  (void)allocation;
   WebViewOverlayWindow *instance = static_cast<WebViewOverlayWindow *>(user_data);
-  if (!instance)
+  if (!instance || !allocation)
     return;
+
+  // GTK fires size-allocate whenever allocation is performed, not only when
+  // it actually changes — gtk_widget_queue_resize() (e.g. from the "stale
+  // GdkWindow" re-assert path in force_overlay_child_gdk_window_bounds) can
+  // trigger this even when nothing moved. Only notify Dart on a real change:
+  // otherwise apply-bounds -> queue_resize -> size-allocate -> notify Dart ->
+  // apply-bounds becomes a self-sustaining infinite loop that pegs the UI
+  // thread and can crash the engine ("Timed out waiting for OpenGL frame").
+  if (instance->has_reported_host_alloc &&
+      instance->last_reported_host_alloc_width == allocation->width &&
+      instance->last_reported_host_alloc_height == allocation->height)
+  {
+    return;
+  }
+  instance->has_reported_host_alloc = TRUE;
+  instance->last_reported_host_alloc_width = allocation->width;
+  instance->last_reported_host_alloc_height = allocation->height;
+
   emit_host_layout_changed(instance);
 }
 
@@ -355,13 +372,22 @@ static void convert_flutter_bounds_to_overlay(
         overlay_h,
         device_pixel_ratio);
   }
-  else if (device_pixel_ratio > 0.01 && fabs(device_pixel_ratio - 1.0) > 0.01)
+  else
   {
-    // Fallback when allocations are not available yet.
-    overlay_x = (gint)lround(flutter_x * device_pixel_ratio);
-    overlay_y = (gint)lround(flutter_y * device_pixel_ratio);
-    overlay_w = (gint)lround(flutter_w * device_pixel_ratio);
-    overlay_h = (gint)lround(flutter_h * device_pixel_ratio);
+    // Widgets not realized yet — leave overlay_x/y/w/h at the unscaled
+    // flutter_x/y/w/h passthrough set above.
+    //
+    // This used to multiply by device_pixel_ratio directly, which is wrong
+    // whenever Flutter's reported dpr doesn't match what GTK will actually
+    // render at (e.g. GTK3 has no fractional scale support, so a KDE/GNOME
+    // session set to a non-integer factor like 125% can hand Flutter a dpr
+    // — 1.25, or rounded to 2.0 — that the GtkOverlay/WebKitGTK layer never
+    // uses). That produced a briefly-but-visibly wrong-sized overlay
+    // (e.g. ~1x200px) at startup on fractional-scale displays. Once realized,
+    // the branch above recomputes scale empirically from actual widget pixel
+    // allocations, which is correct regardless of what dpr claims — so this
+    // fallback only needs to hold a reasonable placeholder until then, not a
+    // scaled guess that can be actively wrong.
   }
 
   if (out_x)
@@ -562,6 +588,12 @@ WebViewOverlayWindow *webview_overlay_window_new(
   instance->last_screen_y = 0;
   instance->last_screen_width = 0;
   instance->last_screen_height = 0;
+  instance->has_reported_host_alloc = FALSE;
+  instance->last_reported_host_alloc_width = 0;
+  instance->last_reported_host_alloc_height = 0;
+  instance->has_reported_parent_configure = FALSE;
+  instance->last_reported_parent_configure_width = 0;
+  instance->last_reported_parent_configure_height = 0;
 
   if (!flutter_view)
   {
@@ -777,17 +809,38 @@ static gboolean on_parent_configure_event(GtkWidget *widget, GdkEventConfigure *
 {
   WebViewOverlayWindow *instance = static_cast<WebViewOverlayWindow *>(user_data);
   (void)widget;
-  (void)event;
   if (!instance)
     return FALSE;
 
   if (instance->embedded_widget_mode)
   {
-    // Ask Dart to re-measure the Flutter placeholder after the compositor settles.
-    // Do not re-assert cached GdkWindow bounds here — on maximize/restore that
-    // fights fresh Dart setBounds and leaves the WebKit surface misaligned.
-    emit_host_layout_changed(instance);
-    g_timeout_add(48, idle_force_overlay_child_bounds, instance);
+    // configure-event fires on any parent window geometry recompute, not
+    // only real moves/resizes — e.g. child widgets calling
+    // gtk_widget_queue_resize() can cause GTK to renegotiate window geometry
+    // and re-fire this even when the final size is unchanged. Without a
+    // dedup, this becomes a self-sustaining loop: notify Dart ->
+    // onHostLayoutChanged -> forced setBounds -> queue_resize (stale
+    // GdkWindow re-assert) -> another configure-event -> notify Dart again,
+    // forever, pegging the UI thread until the engine times out producing a
+    // frame ("Timed out waiting for OpenGL frame").
+    const gboolean unchanged = event &&
+        instance->has_reported_parent_configure &&
+        instance->last_reported_parent_configure_width == event->width &&
+        instance->last_reported_parent_configure_height == event->height;
+    if (event)
+    {
+      instance->has_reported_parent_configure = TRUE;
+      instance->last_reported_parent_configure_width = event->width;
+      instance->last_reported_parent_configure_height = event->height;
+    }
+    if (!unchanged)
+    {
+      // Ask Dart to re-measure the Flutter placeholder after the compositor settles.
+      // Do not re-assert cached GdkWindow bounds here — on maximize/restore that
+      // fights fresh Dart setBounds and leaves the WebKit surface misaligned.
+      emit_host_layout_changed(instance);
+      g_timeout_add(48, idle_force_overlay_child_bounds, instance);
+    }
     return FALSE;
   }
 
