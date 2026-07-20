@@ -27,6 +27,9 @@ class LinuxWebKitGtkInAppWebViewWidgetCreationParams
     super.onProgressChanged,
     super.onConsoleMessage,
     super.shouldOverrideUrlLoading,
+    @Deprecated('Use onLoadResourceWithCustomScheme instead')
+    super.onLoadResourceCustomScheme,
+    super.onLoadResourceWithCustomScheme,
     super.initialUrlRequest,
     super.initialFile,
     super.initialData,
@@ -58,6 +61,9 @@ class LinuxWebKitGtkInAppWebViewWidgetCreationParams
           onProgressChanged: params.onProgressChanged,
           onConsoleMessage: params.onConsoleMessage,
           shouldOverrideUrlLoading: params.shouldOverrideUrlLoading,
+          onLoadResourceCustomScheme: params.onLoadResourceCustomScheme,
+          onLoadResourceWithCustomScheme:
+              params.onLoadResourceWithCustomScheme,
           initialUrlRequest: params.initialUrlRequest,
           initialFile: params.initialFile,
           initialData: params.initialData,
@@ -143,6 +149,20 @@ class LinuxWebKitGtkInAppWebViewWidget extends PlatformInAppWebViewWidget {
           ),
         );
         return (policy ?? NavigationActionPolicy.ALLOW).toNativeValue() ?? 1;
+      },
+      onLoadResourceWithCustomScheme: (request) async {
+        final c = _controller;
+        if (c == null) return null;
+        // ignore: deprecated_member_use_from_same_package
+        final legacy = _params.onLoadResourceCustomScheme;
+        final modern = _params.onLoadResourceWithCustomScheme;
+        CustomSchemeResponse? response;
+        if (modern != null) {
+          response = await modern(c, request);
+        } else if (legacy != null) {
+          response = await legacy(c, request.url);
+        }
+        return response?.toMap();
       },
       onMessage: (name, payload) async {
         await _controller?.dispatchJavaScriptMessage(name, payload);

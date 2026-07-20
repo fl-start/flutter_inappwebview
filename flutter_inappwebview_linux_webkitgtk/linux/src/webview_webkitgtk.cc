@@ -158,7 +158,7 @@ static void on_script_message_for_handler(WebKitUserContentManager *manager,
                                             gpointer user_data);
 
 // Forward declaration for scheme request callback
-static void appmsg_scheme_request_callback(WebKitURISchemeRequest *request,
+static void custom_scheme_request_callback(WebKitURISchemeRequest *request,
                                            gpointer user_data);
 
 // Helper function to free scheme content
@@ -172,6 +172,146 @@ static void scheme_content_free(gpointer data)
     g_free(content->content_type);
     g_free(content);
   }
+}
+
+typedef struct _CustomSchemeRequestContext
+{
+  WebKitURISchemeRequest *request;
+  WebViewWebKitGTK *instance;
+} CustomSchemeRequestContext;
+
+static void custom_scheme_request_context_free(CustomSchemeRequestContext *context)
+{
+  if (!context)
+    return;
+  if (context->request)
+    g_object_unref(context->request);
+  g_free(context);
+}
+
+static gboolean finish_scheme_from_native_route(WebViewWebKitGTK *instance,
+                                                WebKitURISchemeRequest *request,
+                                                const gchar *uri)
+{
+  if (!instance || !instance->scheme_routes || !uri)
+    return FALSE;
+
+  const gchar *path = uri;
+  const gchar *scheme_sep = strstr(uri, "://");
+  if (scheme_sep != nullptr)
+  {
+    path = scheme_sep + 3;
+    // Skip authority host (e.g. "local") when present: appmsg://local/foo -> /foo
+    const gchar *slash = strchr(path, '/');
+    if (slash != nullptr)
+    {
+      path = slash;
+    }
+    else
+    {
+      path = "/";
+    }
+  }
+  if (*path == '/')
+  {
+    path++;
+  }
+
+  WebViewSchemeContent *content =
+      (WebViewSchemeContent *)g_hash_table_lookup(instance->scheme_routes, path);
+  if (!content && path[0] != '\0')
+  {
+    // Also try with leading slash preserved as key variants.
+    g_autofree gchar *with_slash = g_strdup_printf("/%s", path);
+    content = (WebViewSchemeContent *)g_hash_table_lookup(
+        instance->scheme_routes, with_slash);
+  }
+
+  if (!content)
+  {
+    return FALSE;
+  }
+
+  GInputStream *stream = g_memory_input_stream_new_from_data(
+      content->content, content->content_length, nullptr);
+  WebKitURISchemeResponse *response =
+      webkit_uri_scheme_response_new(stream, content->content_length);
+  webkit_uri_scheme_response_set_content_type(response, content->content_type);
+  webkit_uri_scheme_request_finish_with_response(request, response);
+  g_object_unref(stream);
+  g_object_unref(response);
+  g_print("🐧 Scheme request served from native route: %s (%zu bytes, %s)\n",
+          path, content->content_length, content->content_type);
+  return TRUE;
+}
+
+static void on_dart_custom_scheme_result(GObject *source_object,
+                                         GAsyncResult *result,
+                                         gpointer user_data)
+{
+  CustomSchemeRequestContext *context =
+      static_cast<CustomSchemeRequestContext *>(user_data);
+  g_autoptr(GError) error = nullptr;
+  g_autoptr(FlMethodResponse) response = fl_method_channel_invoke_method_finish(
+      FL_METHOD_CHANNEL(source_object), result, &error);
+
+  WebKitURISchemeRequest *request = context->request;
+  WebViewWebKitGTK *instance = context->instance;
+
+  if (error || !FL_IS_METHOD_SUCCESS_RESPONSE(response))
+  {
+    const gchar *uri = webkit_uri_scheme_request_get_uri(request);
+    if (!finish_scheme_from_native_route(instance, request, uri))
+    {
+      g_autoptr(GError) finish_error = g_error_new_literal(
+          G_IO_ERROR, G_IO_ERROR_NOT_FOUND, "Resource not found");
+      webkit_uri_scheme_request_finish_error(request, finish_error);
+    }
+    custom_scheme_request_context_free(context);
+    return;
+  }
+
+  FlValue *value = fl_method_success_response_get_result(
+      FL_METHOD_SUCCESS_RESPONSE(response));
+  if (!value || fl_value_get_type(value) != FL_VALUE_TYPE_MAP)
+  {
+    const gchar *uri = webkit_uri_scheme_request_get_uri(request);
+    if (!finish_scheme_from_native_route(instance, request, uri))
+    {
+      g_autoptr(GError) finish_error = g_error_new_literal(
+          G_IO_ERROR, G_IO_ERROR_NOT_FOUND, "Resource not found");
+      webkit_uri_scheme_request_finish_error(request, finish_error);
+    }
+    custom_scheme_request_context_free(context);
+    return;
+  }
+
+  FlValue *data_value = fl_value_lookup_string(value, "data");
+  FlValue *content_type_value = fl_value_lookup_string(value, "contentType");
+  if (!data_value || fl_value_get_type(data_value) != FL_VALUE_TYPE_UINT8_LIST)
+  {
+    g_autoptr(GError) finish_error = g_error_new_literal(
+        G_IO_ERROR, G_IO_ERROR_NOT_FOUND, "Resource not found");
+    webkit_uri_scheme_request_finish_error(request, finish_error);
+    custom_scheme_request_context_free(context);
+    return;
+  }
+
+  const uint8_t *bytes = fl_value_get_uint8_list(data_value);
+  size_t length = fl_value_get_length(data_value);
+  const gchar *content_type = "application/octet-stream";
+  if (content_type_value &&
+      fl_value_get_type(content_type_value) == FL_VALUE_TYPE_STRING)
+  {
+    content_type = fl_value_get_string(content_type_value);
+  }
+
+  gpointer copied = g_memdup2(bytes, length);
+  GInputStream *stream =
+      g_memory_input_stream_new_from_data(copied, length, g_free);
+  webkit_uri_scheme_request_finish(request, stream, (gint64)length, content_type);
+  g_object_unref(stream);
+  custom_scheme_request_context_free(context);
 }
 
 // Create a new WebKitGTK WebView instance
@@ -229,8 +369,9 @@ WebViewWebKitGTK *webview_webkitgtk_new(
   webview_webkitgtk_register_message_handler(instance, "emailComposer");
   webview_webkitgtk_register_message_handler(instance, "openExternalUrl");
 
-  // Register appmsg:// custom scheme
-  webview_webkitgtk_register_custom_scheme(instance, "appmsg");
+  // Always register appmsg://; also honor resourceCustomSchemes from Flutter.
+  webview_webkitgtk_register_custom_schemes_from_settings(
+      instance, settings_map_or_null);
 
   g_print("🐧 WebKitGTK WebView created (view_id: %ld)\n", view_id);
 
@@ -499,71 +640,84 @@ gchar *webview_webkitgtk_get_current_url(WebViewWebKitGTK *instance)
   return uri ? g_strdup(uri) : nullptr;
 }
 
-// Scheme request callback - handles appmsg:// URLs
-static void appmsg_scheme_request_callback(WebKitURISchemeRequest *request,
+// Scheme request callback — prefers Dart onLoadResourceWithCustomScheme,
+// then falls back to the legacy native scheme_routes table.
+static void custom_scheme_request_callback(WebKitURISchemeRequest *request,
                                            gpointer user_data)
 {
   WebViewWebKitGTK *instance =
       static_cast<WebViewWebKitGTK *>(user_data);
 
-  if (!instance || !instance->scheme_routes)
+  if (!instance || !request)
   {
-    g_warning("🐧 Scheme request callback: Invalid instance or routes");
-    webkit_uri_scheme_request_finish_error(request, g_error_new_literal(
-                                                        G_IO_ERROR, G_IO_ERROR_FAILED, "Internal error"));
+    g_warning("🐧 Scheme request callback: Invalid instance");
+    webkit_uri_scheme_request_finish_error(
+        request, g_error_new_literal(G_IO_ERROR, G_IO_ERROR_FAILED,
+                                     "Internal error"));
     return;
   }
 
   const gchar *uri = webkit_uri_scheme_request_get_uri(request);
-  g_print("🐧 Scheme request: %s\n", uri);
+  g_print("🐧 Scheme request: %s\n", uri ? uri : "(null)");
 
-  // Parse URI: appmsg://path -> extract path
-  // For now, we'll use the full URI as the key (we'll improve parsing later)
-  const gchar *path = uri;
-  if (g_str_has_prefix(uri, "appmsg://"))
+  if (!instance->method_channel)
   {
-    path = uri + 9; // Skip "appmsg://"
-    // Remove leading slash if present
-    if (*path == '/')
+    if (!finish_scheme_from_native_route(instance, request, uri))
     {
-      path++;
+      webkit_uri_scheme_request_finish_error(
+          request, g_error_new_literal(G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
+                                       "Route not found"));
     }
-  }
-
-  // Look up content in hash table
-  WebViewSchemeContent *content =
-      (WebViewSchemeContent *)g_hash_table_lookup(
-          instance->scheme_routes, path);
-
-  if (!content)
-  {
-    g_warning("🐧 Scheme route not found: %s", path);
-    webkit_uri_scheme_request_finish_error(request, g_error_new_literal(
-                                                        G_IO_ERROR, G_IO_ERROR_NOT_FOUND, "Route not found"));
     return;
   }
 
-  // Create input stream from content
-  GInputStream *stream = g_memory_input_stream_new_from_data(
-      content->content, content->content_length, nullptr);
+  g_autoptr(FlValue) args = fl_value_new_map();
+  fl_value_set_string_take(args, "viewId",
+                           fl_value_new_int((int64_t)instance->view_id));
 
-  // Create response
-  WebKitURISchemeResponse *response = webkit_uri_scheme_response_new(
-      stream, content->content_length);
-  webkit_uri_scheme_response_set_content_type(response, content->content_type);
+  g_autoptr(FlValue) request_map = fl_value_new_map();
+  fl_value_set_string_take(request_map, "url",
+                           fl_value_new_string(uri ? uri : ""));
+  const gchar *http_method =
+      webkit_uri_scheme_request_get_http_method(request);
+  fl_value_set_string_take(
+      request_map, "method",
+      fl_value_new_string(http_method ? http_method : "GET"));
+  fl_value_set_string_take(request_map, "isForMainFrame",
+                           fl_value_new_bool(TRUE));
 
-  // Finish request with response
-  webkit_uri_scheme_request_finish_with_response(request, response);
+  g_autoptr(FlValue) headers_map = fl_value_new_map();
+  SoupMessageHeaders *headers =
+      webkit_uri_scheme_request_get_http_headers(request);
+  if (headers != nullptr)
+  {
+    SoupMessageHeadersIter iter;
+    const char *name = nullptr;
+    const char *value = nullptr;
+    soup_message_headers_iter_init(&iter, headers);
+    while (soup_message_headers_iter_next(&iter, &name, &value))
+    {
+      if (name != nullptr && value != nullptr)
+      {
+        fl_value_set_string_take(headers_map, name,
+                                 fl_value_new_string(value));
+      }
+    }
+  }
+  fl_value_set_string_take(request_map, "headers",
+                           fl_value_ref(headers_map));
+  fl_value_set_string_take(args, "request", fl_value_ref(request_map));
 
-  // Clean up
-  g_object_unref(stream);
-  g_object_unref(response);
+  CustomSchemeRequestContext *context = g_new0(CustomSchemeRequestContext, 1);
+  context->request = WEBKIT_URI_SCHEME_REQUEST(g_object_ref(request));
+  context->instance = instance;
 
-  g_print("🐧 Scheme request served: %s (%zu bytes, %s)\n",
-          path, content->content_length, content->content_type);
+  fl_method_channel_invoke_method(
+      instance->method_channel, "onLoadResourceWithCustomScheme", args,
+      nullptr, on_dart_custom_scheme_result, context);
 }
 
-// Register custom scheme handler (appmsg://)
+// Register custom scheme handler (forwards to Dart + native fallback).
 void webview_webkitgtk_register_custom_scheme(
     WebViewWebKitGTK *instance,
     const gchar *scheme)
@@ -573,17 +727,67 @@ void webview_webkitgtk_register_custom_scheme(
     return;
   }
 
+  // Built-in schemes cannot be overridden.
+  if (g_strcmp0(scheme, "http") == 0 || g_strcmp0(scheme, "https") == 0 ||
+      g_strcmp0(scheme, "file") == 0 || g_strcmp0(scheme, "data") == 0 ||
+      g_strcmp0(scheme, "about") == 0 || g_strcmp0(scheme, "blob") == 0)
+  {
+    g_warning("🐧 Refusing to register built-in scheme: %s", scheme);
+    return;
+  }
+
   g_print("🐧 Registering custom scheme: %s\n", scheme);
 
-  // Register the scheme with WebKit
   webkit_web_context_register_uri_scheme(
       instance->web_context,
       scheme,
-      appmsg_scheme_request_callback,
-      instance, // User data (our instance)
-      nullptr); // Destroy notify (not needed, instance manages lifecycle)
+      custom_scheme_request_callback,
+      instance,
+      nullptr);
 
   g_print("🐧 Custom scheme '%s' registered successfully\n", scheme);
+}
+
+void webview_webkitgtk_register_custom_schemes_from_settings(
+    WebViewWebKitGTK *instance,
+    FlValue *settings_map_or_null)
+{
+  if (!instance)
+  {
+    return;
+  }
+
+  // Always register appmsg for secMail / legacy callers.
+  webview_webkitgtk_register_custom_scheme(instance, "appmsg");
+
+  if (!settings_map_or_null ||
+      fl_value_get_type(settings_map_or_null) != FL_VALUE_TYPE_MAP)
+  {
+    return;
+  }
+
+  FlValue *schemes_value =
+      fl_value_lookup_string(settings_map_or_null, "resourceCustomSchemes");
+  if (!schemes_value || fl_value_get_type(schemes_value) != FL_VALUE_TYPE_LIST)
+  {
+    return;
+  }
+
+  const size_t count = fl_value_get_length(schemes_value);
+  for (size_t i = 0; i < count; i++)
+  {
+    FlValue *item = fl_value_get_list_value(schemes_value, i);
+    if (!item || fl_value_get_type(item) != FL_VALUE_TYPE_STRING)
+    {
+      continue;
+    }
+    const gchar *scheme = fl_value_get_string(item);
+    if (!scheme || g_strcmp0(scheme, "appmsg") == 0)
+    {
+      continue;
+    }
+    webview_webkitgtk_register_custom_scheme(instance, scheme);
+  }
 }
 
 // Register a route for the custom scheme

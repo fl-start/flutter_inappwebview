@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview_platform_interface/flutter_inappwebview_platform_interface.dart';
 
 import 'webkitgtk_channel_dispatcher.dart';
+import 'webkitgtk_custom_scheme.dart';
 import 'webkitgtk_geometry.dart';
 import 'webkitgtk_keep_alive_pool.dart';
 import 'webkitgtk_overlay_hooks.dart';
@@ -34,6 +35,8 @@ class WebKitGtkOverlayWidget extends StatefulWidget {
   final void Function(String url) onLoadStop;
   final void Function(String url, int code, String message) onLoadError;
   final Future<int> Function(String url) shouldOverrideUrlLoading;
+  final Future<Map<String, dynamic>?> Function(WebResourceRequest request)?
+      onLoadResourceWithCustomScheme;
   final Future<dynamic> Function(String name, dynamic payload) onMessage;
   final void Function(WebViewControllerWebKitGTK controller) onWebViewCreated;
   final Map<String, String>? initialHeaders;
@@ -50,6 +53,7 @@ class WebKitGtkOverlayWidget extends StatefulWidget {
     required this.onLoadStop,
     required this.onLoadError,
     required this.shouldOverrideUrlLoading,
+    this.onLoadResourceWithCustomScheme,
     required this.onMessage,
     required this.onWebViewCreated,
     this.initialHeaders,
@@ -312,6 +316,12 @@ class _WebKitGtkOverlayWidgetState extends State<WebKitGtkOverlayWidget>
       case 'shouldOverrideUrlLoading':
         final url = call.arguments['url'] as String;
         return widget.shouldOverrideUrlLoading(url);
+      case 'onLoadResourceWithCustomScheme':
+        final handler = widget.onLoadResourceWithCustomScheme;
+        if (handler == null) return null;
+        final request = parseCustomSchemeMethodCall(call);
+        if (request == null) return null;
+        return handler(request);
       case 'onMessage':
         final name = call.arguments['name'] as String;
         final payload = call.arguments['payload'];

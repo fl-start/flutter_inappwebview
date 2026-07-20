@@ -81,10 +81,15 @@ gboolean webview_webkitgtk_can_go_back(WebViewWebKitGTK *instance);
 // Get current URL
 gchar *webview_webkitgtk_get_current_url(WebViewWebKitGTK *instance);
 
-// Register custom scheme handler (appmsg://)
+// Register custom scheme handler (Dart onLoadResourceWithCustomScheme + native fallback)
 void webview_webkitgtk_register_custom_scheme(
     WebViewWebKitGTK *instance,
     const gchar *scheme);
+
+// Register appmsg plus any resourceCustomSchemes from Flutter settings.
+void webview_webkitgtk_register_custom_schemes_from_settings(
+    WebViewWebKitGTK *instance,
+    FlValue *settings_map_or_null);
 
 // Register a route for the custom scheme
 void webview_webkitgtk_register_scheme_route(
