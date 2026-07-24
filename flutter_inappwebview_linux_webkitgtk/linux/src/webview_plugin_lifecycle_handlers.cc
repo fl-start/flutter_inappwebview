@@ -538,10 +538,25 @@ bool webview_plugin_try_handle_lifecycle_method(
               height);
         }
 
-        // One visible GtkOverlay WebKit at a time — keep-alive composer must
-        // not stay painted over the mailbox reader (intermittent dual overlay).
-        webview_overlay_window_hide_others(overlay_windows, overlay_window);
-        webview_overlay_window_show(overlay_window);
+        // Only show when Dart reports the view should be visible. A covered
+        // reader keep-alive must not steal the compose / page-builder surface
+        // via hide_others + show.
+        FlValue *visible_value = fl_value_lookup_string(args, "visible");
+        gboolean should_show = TRUE;
+        if (visible_value && fl_value_get_type(visible_value) == FL_VALUE_TYPE_BOOL)
+          should_show = fl_value_get_bool(visible_value);
+
+        if (should_show)
+        {
+          // One visible GtkOverlay WebKit at a time — keep-alive composer must
+          // not stay painted over the mailbox reader (intermittent dual overlay).
+          webview_overlay_window_hide_others(overlay_windows, overlay_window);
+          webview_overlay_window_show(overlay_window);
+        }
+        else
+        {
+          webview_overlay_window_hide(overlay_window);
+        }
       }
     }
     else

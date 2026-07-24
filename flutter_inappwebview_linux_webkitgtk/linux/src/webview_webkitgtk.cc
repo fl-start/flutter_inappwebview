@@ -16,6 +16,53 @@ typedef struct _ScriptHandlerUserData
   gchar *handler_name;
 } ScriptHandlerUserData;
 
+// Shared WebKitWebContext: URI schemes can only be registered once per context.
+// Map each WebKitWebView back to its wrapper so scheme callbacks attribute the
+// correct viewId (compose vs reader) even when registration userdata is stale.
+static GHashTable *g_webkit_instances_by_view = nullptr;
+
+static void ensure_webkit_instance_table(void)
+{
+  if (g_webkit_instances_by_view == nullptr)
+  {
+    g_webkit_instances_by_view =
+        g_hash_table_new(g_direct_hash, g_direct_equal);
+  }
+}
+
+static void register_webkit_instance(WebViewWebKitGTK *instance)
+{
+  if (!instance || !instance->web_view)
+    return;
+  ensure_webkit_instance_table();
+  g_hash_table_insert(g_webkit_instances_by_view, instance->web_view, instance);
+}
+
+static void unregister_webkit_instance(WebViewWebKitGTK *instance)
+{
+  if (!instance || !instance->web_view || !g_webkit_instances_by_view)
+    return;
+  g_hash_table_remove(g_webkit_instances_by_view, instance->web_view);
+}
+
+static WebViewWebKitGTK *instance_for_scheme_request(
+    WebKitURISchemeRequest *request,
+    gpointer registration_userdata)
+{
+  if (request != nullptr)
+  {
+    WebKitWebView *web_view = webkit_uri_scheme_request_get_web_view(request);
+    if (web_view != nullptr && g_webkit_instances_by_view != nullptr)
+    {
+      WebViewWebKitGTK *found = static_cast<WebViewWebKitGTK *>(
+          g_hash_table_lookup(g_webkit_instances_by_view, web_view));
+      if (found != nullptr)
+        return found;
+    }
+  }
+  return static_cast<WebViewWebKitGTK *>(registration_userdata);
+}
+
 static void script_handler_user_data_free(gpointer data)
 {
   ScriptHandlerUserData *handler_data = static_cast<ScriptHandlerUserData *>(data);
@@ -217,6 +264,23 @@ static gboolean finish_scheme_from_native_route(WebViewWebKitGTK *instance,
     path++;
   }
 
+  // Strip query/fragment so compose/shell.html?v=53 matches compose/shell.html.
+  g_autofree gchar *path_owned = nullptr;
+  const gchar *q = strchr(path, '?');
+  const gchar *hash = strchr(path, '#');
+  const gchar *cut = nullptr;
+  if (q != nullptr && hash != nullptr)
+    cut = (q < hash) ? q : hash;
+  else if (q != nullptr)
+    cut = q;
+  else if (hash != nullptr)
+    cut = hash;
+  if (cut != nullptr)
+  {
+    path_owned = g_strndup(path, (gsize)(cut - path));
+    path = path_owned;
+  }
+
   WebViewSchemeContent *content =
       (WebViewSchemeContent *)g_hash_table_lookup(instance->scheme_routes, path);
   if (!content && path[0] != '\0')
@@ -288,11 +352,18 @@ static void on_dart_custom_scheme_result(GObject *source_object,
 
   FlValue *data_value = fl_value_lookup_string(value, "data");
   FlValue *content_type_value = fl_value_lookup_string(value, "contentType");
-  if (!data_value || fl_value_get_type(data_value) != FL_VALUE_TYPE_UINT8_LIST)
+  if (!data_value || fl_value_get_type(data_value) != FL_VALUE_TYPE_UINT8_LIST ||
+      fl_value_get_length(data_value) == 0)
   {
-    g_autoptr(GError) finish_error = g_error_new_literal(
-        G_IO_ERROR, G_IO_ERROR_NOT_FOUND, "Resource not found");
-    webkit_uri_scheme_request_finish_error(request, finish_error);
+    // Empty/miss from Dart (e.g. LocalhostServerService miss) — try native
+    // scheme_routes before failing the WebKit request.
+    const gchar *uri = webkit_uri_scheme_request_get_uri(request);
+    if (!finish_scheme_from_native_route(instance, request, uri))
+    {
+      g_autoptr(GError) finish_error = g_error_new_literal(
+          G_IO_ERROR, G_IO_ERROR_NOT_FOUND, "Resource not found");
+      webkit_uri_scheme_request_finish_error(request, finish_error);
+    }
     custom_scheme_request_context_free(context);
     return;
   }
@@ -369,6 +440,8 @@ WebViewWebKitGTK *webview_webkitgtk_new(
   webview_webkitgtk_register_message_handler(instance, "emailComposer");
   webview_webkitgtk_register_message_handler(instance, "openExternalUrl");
 
+  register_webkit_instance(instance);
+
   // Always register appmsg://; also honor resourceCustomSchemes from Flutter.
   webview_webkitgtk_register_custom_schemes_from_settings(
       instance, settings_map_or_null);
@@ -385,6 +458,8 @@ void webview_webkitgtk_destroy(WebViewWebKitGTK *instance)
     return;
 
   g_print("🐧 Destroying WebKitGTK WebView (view_id: %ld)\n", instance->view_id);
+
+  unregister_webkit_instance(instance);
 
   // Tear down in an order WebKitGTK expects: the WebView must be removed and
   // destroyed while its WebContext is still valid. Unref'ing web_context while
@@ -646,7 +721,7 @@ static void custom_scheme_request_callback(WebKitURISchemeRequest *request,
                                            gpointer user_data)
 {
   WebViewWebKitGTK *instance =
-      static_cast<WebViewWebKitGTK *>(user_data);
+      instance_for_scheme_request(request, user_data);
 
   if (!instance || !request)
   {
@@ -658,7 +733,8 @@ static void custom_scheme_request_callback(WebKitURISchemeRequest *request,
   }
 
   const gchar *uri = webkit_uri_scheme_request_get_uri(request);
-  g_print("🐧 Scheme request: %s\n", uri ? uri : "(null)");
+  g_print("🐧 Scheme request viewId=%ld: %s\n",
+          (long)instance->view_id, uri ? uri : "(null)");
 
   if (!instance->method_channel)
   {
@@ -736,6 +812,18 @@ void webview_webkitgtk_register_custom_scheme(
     return;
   }
 
+  // Shared contexts may only register a given scheme once. Subsequent views
+  // rely on instance_for_scheme_request() to resolve the correct wrapper.
+  g_autofree gchar *marker_key =
+      g_strdup_printf("scomm-uri-scheme-registered-%s", scheme);
+  if (g_object_get_data(G_OBJECT(instance->web_context), marker_key) != nullptr)
+  {
+    g_print("🐧 Custom scheme '%s' already registered on shared context "
+            "(view_id: %ld)\n",
+            scheme, (long)instance->view_id);
+    return;
+  }
+
   g_print("🐧 Registering custom scheme: %s\n", scheme);
 
   webkit_web_context_register_uri_scheme(
@@ -744,6 +832,9 @@ void webview_webkitgtk_register_custom_scheme(
       custom_scheme_request_callback,
       instance,
       nullptr);
+
+  g_object_set_data(G_OBJECT(instance->web_context), marker_key,
+                    GINT_TO_POINTER(1));
 
   g_print("🐧 Custom scheme '%s' registered successfully\n", scheme);
 }

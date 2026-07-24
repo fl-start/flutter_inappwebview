@@ -1,5 +1,7 @@
 import 'package:flutter/services.dart';
 
+import 'webkitgtk_custom_scheme.dart';
+
 /// Single owner of the `webview_webkitgtk` [MethodChannel] handler.
 ///
 /// Multiple overlay widgets and legacy host services must not call
@@ -70,7 +72,27 @@ class WebKitGtkChannelDispatcher {
 
     if (viewId != null) {
       final targeted = _viewHandlers[viewId];
-      if (targeted != null) return targeted(call);
+      if (targeted != null) {
+        final result = await targeted(call);
+        // Custom-scheme content is view-agnostic (Dart LocalhostServerService).
+        // If this view's overlay returned null (handler not wired yet), try peers
+        // before falling through to native scheme_routes / NOT_FOUND.
+        if (result != null ||
+            call.method != 'onLoadResourceWithCustomScheme') {
+          return result;
+        }
+      }
+    }
+
+    if (call.method == 'onLoadResourceWithCustomScheme') {
+      for (final entry in _viewHandlers.entries) {
+        if (entry.key == viewId) continue;
+        final result = await entry.value(call);
+        if (result != null) return result;
+      }
+      // Process-wide resolver (no controller required).
+      final global = await resolveCustomSchemeMethodCall(call);
+      if (global != null) return global;
     }
 
     // Broadcast load/message events that omit viewId to every view handler,

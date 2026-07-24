@@ -89,14 +89,74 @@ class LinuxWebKitGtkInAppWebViewWidget extends PlatformInAppWebViewWidget {
   LinuxWebKitGtkInAppWebViewWidgetCreationParams get _params =>
       params as LinuxWebKitGtkInAppWebViewWidgetCreationParams;
 
-  LinuxWebKitGtkInAppWebViewController? _controller;
-
   static final LinuxWebKitGtkInAppWebViewWidget _static =
       LinuxWebKitGtkInAppWebViewWidget(
         LinuxWebKitGtkInAppWebViewWidgetCreationParams(),
       );
 
   factory LinuxWebKitGtkInAppWebViewWidget.static() => _static;
+
+  @override
+  Widget build(BuildContext context) {
+    // Host State owns the controller. Storing it on this Platform widget is
+    // unsafe: Flutter rebuilds create a new instance with a null field while
+    // the overlay State (and native WebView) survive — appmsg:// then hits a
+    // null-controller scheme handler and fails with "Resource not found".
+    //
+    // Stable key keeps Host State across parent rebuilds (keepAlive id when
+    // present; otherwise the widget key / a fixed slot name).
+    final stableKey = ValueKey<Object>(
+      _params.keepAlive?.id ?? _params.key ?? 'linux-inappwebview',
+    );
+    return _LinuxInAppWebViewHost(
+      key: stableKey,
+      params: _params,
+    );
+  }
+
+  @override
+  void dispose() {
+    // Host State.dispose handles the controller when removed from the tree.
+    final isKeepAlive = _params.keepAlive != null;
+    _params.findInteractionController?.dispose(isKeepAlive: isKeepAlive);
+  }
+
+  @override
+  T controllerFromPlatform<T>(PlatformInAppWebViewController controller) {
+    throw UnimplementedError();
+  }
+}
+
+class _LinuxInAppWebViewHost extends StatefulWidget {
+  const _LinuxInAppWebViewHost({
+    super.key,
+    required this.params,
+  });
+
+  final LinuxWebKitGtkInAppWebViewWidgetCreationParams params;
+
+  @override
+  State<_LinuxInAppWebViewHost> createState() => _LinuxInAppWebViewHostState();
+}
+
+class _LinuxInAppWebViewHostState extends State<_LinuxInAppWebViewHost> {
+  LinuxWebKitGtkInAppWebViewController? _controller;
+
+  LinuxWebKitGtkInAppWebViewWidgetCreationParams get _params => widget.params;
+
+  @override
+  void dispose() {
+    final isKeepAlive = _params.keepAlive != null;
+    _controller?.dispose(isKeepAlive: isKeepAlive);
+    _controller = null;
+    super.dispose();
+  }
+
+  @override
+  void didUpdateWidget(covariant _LinuxInAppWebViewHost oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // Params (callbacks) are replaced on each parent rebuild; keep controller.
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -180,18 +240,5 @@ class LinuxWebKitGtkInAppWebViewWidget extends PlatformInAppWebViewWidget {
         _params.onWebViewCreated?.call(exposed);
       },
     );
-  }
-
-  @override
-  void dispose() {
-    final isKeepAlive = _params.keepAlive != null;
-    _controller?.dispose(isKeepAlive: isKeepAlive);
-    _controller = null;
-    _params.findInteractionController?.dispose(isKeepAlive: isKeepAlive);
-  }
-
-  @override
-  T controllerFromPlatform<T>(PlatformInAppWebViewController controller) {
-    throw UnimplementedError();
   }
 }

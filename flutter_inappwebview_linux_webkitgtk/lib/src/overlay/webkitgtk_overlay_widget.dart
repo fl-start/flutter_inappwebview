@@ -147,20 +147,21 @@ class _WebKitGtkOverlayWidgetState extends State<WebKitGtkOverlayWidget>
   /// Whether the native surface should currently be on-screen.
   ///
   /// Hidden when: this state is gone, the subtree is offstage, our route is not
-  /// current, OR a modal is stacked above the base shell route on the root
-  /// navigator while THIS webview lives below it (shell-nested, e.g. the email
-  /// reader). Webviews that live inside the topmost root route (the dialog
-  /// itself, e.g. the composer editor) stay visible.
+  /// current, OR a modal/fullscreen cover is stacked above the shell while THIS
+  /// webview lives below it (shell-nested, e.g. the email reader). Webviews that
+  /// live inside the covering route (composer / page-builder) stay visible.
   bool _computeShouldBeVisible() {
     if (!mounted) return false;
     if (!TickerMode.valuesOf(context).enabled) return false;
     final route = ModalRoute.of(context);
     if (route != null && !route.isCurrent) return false;
+    if (route != null && !route.isActive) return false;
     if (WebKitGtkOverlayHooks.isAnyRootPopupOpen) {
       final rootNav = Navigator.maybeOf(context, rootNavigator: true);
       final isOnRootNav = route?.navigator == rootNav;
-      // Shell-nested webviews (email reader) hide under any root dialog/popup.
-      // Webviews inside the dialog itself (composer editor) stay visible.
+      // Shell-nested webviews (email reader) hide under any root dialog/popup
+      // or fullscreen shell-cover (compose MaterialPageRoute).
+      // Webviews inside the cover itself (composer editor) stay visible.
       if (!isOnRootNav) return false;
     }
     // Tiny / near-zero slots (prewarm opacity placeholders) must stay natively
@@ -317,11 +318,10 @@ class _WebKitGtkOverlayWidgetState extends State<WebKitGtkOverlayWidget>
         final url = call.arguments['url'] as String;
         return widget.shouldOverrideUrlLoading(url);
       case 'onLoadResourceWithCustomScheme':
-        final handler = widget.onLoadResourceWithCustomScheme;
-        if (handler == null) return null;
-        final request = parseCustomSchemeMethodCall(call);
-        if (request == null) return null;
-        return handler(request);
+        return resolveCustomSchemeMethodCall(
+          call,
+          viewHandler: widget.onLoadResourceWithCustomScheme,
+        );
       case 'onMessage':
         final name = call.arguments['name'] as String;
         final payload = call.arguments['payload'];
@@ -542,24 +542,19 @@ class _WebKitGtkOverlayWidgetState extends State<WebKitGtkOverlayWidget>
       _setNativeVisibility(shouldBeVisible);
     }
 
+    // Covered / offstage / inactive views must never call setBounds.
+    // Native setBounds always shows + hide_others, which re-surfaces the
+    // mailbox reader on top of compose / page-builder.
+    if (!shouldBeVisible) {
+      return;
+    }
+
     // Per-view host acceleration (reader maximize). Composer must get null.
     final Rect? hostBounds =
         WebKitGtkOverlayHooks.boundsProvider?.call(_viewId);
     final force = bypassDebounce ||
         WebKitGtkOverlayHooks.forceImmediateBoundsSync ||
         hostBounds != null;
-
-    // Still push geometry while hidden during maximize: a stale !_nativeVisible
-    // gate previously skipped the only setBounds that would relocate the surface,
-    // leaving WebKit stuck at pre-maximize coords while Flutter had already grown.
-    //
-    // Exception: when a root popup (composer) is open, shell-nested readers must
-    // not push setBounds — native setBounds calls show+hide_others and would
-    // steal the composer's surface.
-    if (!_nativeVisible) {
-      if (WebKitGtkOverlayHooks.isAnyRootPopupOpen) return;
-      if (!force) return;
-    }
 
     final placeholderContext = _placeholderKey.currentContext;
     RenderBox? placeholderBox;
@@ -670,6 +665,8 @@ class _WebKitGtkOverlayWidgetState extends State<WebKitGtkOverlayWidget>
         if (_nativeVisible) {
           // Ensure surface is shown after bounds land (hide may have raced).
           unawaited(_setNativeVisibility(true));
+        } else {
+          unawaited(_setNativeVisibility(false));
         }
       }
 
