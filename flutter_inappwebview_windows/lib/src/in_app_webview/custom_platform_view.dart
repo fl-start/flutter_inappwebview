@@ -320,6 +320,8 @@ class _CustomPlatformViewState extends State<CustomPlatformView>
     _controller.initialize(
       onPlatformViewCreated: (id) {
         widget.onPlatformViewCreated?.call(id);
+        // Host may dispose during async initialize (rapid keyboard nav).
+        if (!mounted) return;
         setState(() {});
       },
       arguments: widget.creationParams,
@@ -327,27 +329,48 @@ class _CustomPlatformViewState extends State<CustomPlatformView>
 
     _listener = AppLifecycleListener(
       onStateChange: (state) {
-        if ([
-          AppLifecycleState.resumed,
-          AppLifecycleState.hidden,
-        ].contains(state)) {
+        if (state == AppLifecycleState.hidden ||
+            state == AppLifecycleState.paused) {
+          for (final button in _downButtons.values) {
+            _controller._setPointerButtonState(
+              InAppWebViewPointerEventKind.cancel,
+              button,
+            );
+          }
+          _downButtons.clear();
+          _focusNode.unfocus();
           _reportSurfaceSize();
           _reportWidgetPosition();
+        } else if (state == AppLifecycleState.resumed) {
+          _scheduleLifecycleLayoutRecovery();
         }
       },
     );
 
     // Report initial surface size and widget position
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
       _reportSurfaceSize();
       _reportWidgetPosition();
     });
 
     _cursorSubscription = _controller._cursor.listen((cursor) {
+      if (!mounted) return;
       setState(() {
         _cursor = cursor;
       });
     });
+  }
+
+  void _scheduleLifecycleLayoutRecovery([int frames = 4]) {
+    if (frames <= 0) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _reportSurfaceSize();
+      _reportWidgetPosition();
+      _scheduleLifecycleLayoutRecovery(frames - 1);
+    });
+    WidgetsBinding.instance.scheduleFrame();
   }
 
   @override
@@ -502,38 +525,45 @@ class _CustomPlatformViewState extends State<CustomPlatformView>
 
   void _reportSurfaceSize() async {
     final box = _key.currentContext?.findRenderObject() as RenderBox?;
-    if (box != null) {
-      await _controller.ready;
-      unawaited(
-        _controller._setSize(
-          box.size,
-          widget.scaleFactor ?? window.devicePixelRatio,
-        ),
-      );
-    }
+    if (box == null || !box.attached) return;
+    await _controller.ready;
+    // Async gap: rapid nav can detach the platform view before ready completes.
+    if (!mounted) return;
+    final fresh = _key.currentContext?.findRenderObject() as RenderBox?;
+    if (fresh == null || !fresh.attached) return;
+    unawaited(
+      _controller._setSize(
+        fresh.size,
+        widget.scaleFactor ?? window.devicePixelRatio,
+      ),
+    );
   }
 
   void _reportWidgetPosition() async {
     final box = _key.currentContext?.findRenderObject() as RenderBox?;
-    if (box != null) {
-      await _controller.ready;
-      final position = box.localToGlobal(Offset.zero);
-      unawaited(
-        _controller._setPosition(
-          position,
-          widget.scaleFactor ?? window.devicePixelRatio,
-        ),
-      );
-    }
+    if (box == null || !box.attached) return;
+    await _controller.ready;
+    // Async gap: detached RenderBox.localToGlobal asserts 'attached' and can
+    // take down the Windows process during fast keyboard navigation.
+    if (!mounted) return;
+    final fresh = _key.currentContext?.findRenderObject() as RenderBox?;
+    if (fresh == null || !fresh.attached) return;
+    final position = fresh.localToGlobal(Offset.zero);
+    unawaited(
+      _controller._setPosition(
+        position,
+        widget.scaleFactor ?? window.devicePixelRatio,
+      ),
+    );
   }
 
   @override
   void dispose() {
-    super.dispose();
     _platformUtil.removeListener(this);
     _cursorSubscription?.cancel();
     _controller.dispose();
     _focusNode.dispose();
     _listener.dispose();
+    super.dispose();
   }
 }
