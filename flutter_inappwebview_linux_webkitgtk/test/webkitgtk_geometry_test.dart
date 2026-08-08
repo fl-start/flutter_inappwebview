@@ -95,6 +95,16 @@ void main() {
       WebKitGtkOverlayHooks.activeEmbeddedViewId = null;
       WebKitGtkOverlayHooks.forceImmediateBoundsSync = false;
       WebKitGtkOverlayHooks.rootPopupCount.value = 0;
+      WebKitGtkOverlayHooks.exclusiveShellViewId.value = null;
+    });
+
+    test('exclusiveShellViewId setter is idempotent', () {
+      WebKitGtkOverlayHooks.setExclusiveShellViewId(7);
+      expect(WebKitGtkOverlayHooks.exclusiveShellViewId.value, 7);
+      WebKitGtkOverlayHooks.setExclusiveShellViewId(7);
+      expect(WebKitGtkOverlayHooks.exclusiveShellViewId.value, 7);
+      WebKitGtkOverlayHooks.setExclusiveShellViewId(null);
+      expect(WebKitGtkOverlayHooks.exclusiveShellViewId.value, isNull);
     });
 
     test('per-view provider can isolate reader from composer', () {

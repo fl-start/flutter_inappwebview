@@ -123,6 +123,9 @@ class _WebKitGtkOverlayWidgetState extends State<WebKitGtkOverlayWidget>
     // webviews (the email reader) do not rebuild when a root dialog is pushed.
     _modalScopeListener = _reevaluateVisibility;
     WebKitGtkOverlayHooks.rootPopupCount.addListener(_modalScopeListener!);
+    WebKitGtkOverlayHooks.exclusiveShellViewId.addListener(
+      _modalScopeListener!,
+    );
   }
 
   @override
@@ -163,6 +166,14 @@ class _WebKitGtkOverlayWidgetState extends State<WebKitGtkOverlayWidget>
       // or fullscreen shell-cover (compose MaterialPageRoute).
       // Webviews inside the cover itself (composer editor) stay visible.
       if (!isOnRootNav) return false;
+    }
+    final exclusiveId = WebKitGtkOverlayHooks.exclusiveShellViewId.value;
+    if (exclusiveId != null) {
+      final rootNav = Navigator.maybeOf(context, rootNavigator: true);
+      final isOnRootNav = route?.navigator == rootNav;
+      // In-shell workspace tabs: only the active surface's viewId stays up.
+      // Root-cover overlays (true dialogs) are unaffected.
+      if (!isOnRootNav && _viewId != exclusiveId) return false;
     }
     // Tiny / near-zero slots (prewarm opacity placeholders) must stay natively
     // hidden — Opacity does not hide GtkOverlay WebKit.
@@ -211,6 +222,9 @@ class _WebKitGtkOverlayWidgetState extends State<WebKitGtkOverlayWidget>
     }
     if (_modalScopeListener != null) {
       WebKitGtkOverlayHooks.rootPopupCount.removeListener(_modalScopeListener!);
+      WebKitGtkOverlayHooks.exclusiveShellViewId.removeListener(
+        _modalScopeListener!,
+      );
       _modalScopeListener = null;
     }
     _pendingGeometry = null;

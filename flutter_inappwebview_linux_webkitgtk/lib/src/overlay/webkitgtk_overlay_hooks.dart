@@ -6,8 +6,8 @@ import 'webkitgtk_geometry.dart';
 
 /// Optional host-app hooks for GtkOverlay geometry and modal occlusion.
 ///
-/// secMail wires [rightInset], [layoutEpoch], [rootPopupCount], and
-/// [boundsProvider] at startup.
+/// secMail wires [rightInset], [layoutEpoch], [rootPopupCount],
+/// [exclusiveShellViewId], and [boundsProvider] at startup.
 ///
 /// ## Coordinate contract
 ///
@@ -29,6 +29,20 @@ class WebKitGtkOverlayHooks {
   static final ValueNotifier<int> rootPopupCount = ValueNotifier<int>(0);
 
   static bool get isAnyRootPopupOpen => rootPopupCount.value > 0;
+
+  /// When non-null, only this shell-nested overlay [viewId] may be natively
+  /// visible. Other shell-nested overlays are forced hidden.
+  ///
+  /// Used for in-shell workspace tabs (compose vs reader) where there is no
+  /// root PopupRoute to drive [rootPopupCount]. Overlays hosted on a covering
+  /// root route are unaffected. `null` disables exclusive mode.
+  static final ValueNotifier<int?> exclusiveShellViewId =
+      ValueNotifier<int?>(null);
+
+  static void setExclusiveShellViewId(int? viewId) {
+    if (exclusiveShellViewId.value == viewId) return;
+    exclusiveShellViewId.value = viewId;
+  }
 
   static void setRightInset(double value) {
     final normalized = value < 0 ? 0.0 : value;
