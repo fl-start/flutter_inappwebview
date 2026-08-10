@@ -319,17 +319,27 @@ static void convert_flutter_bounds_to_overlay(
     const gint view_px_w = gtk_widget_get_allocated_width(flutter_widget);
     const gint view_px_h = gtk_widget_get_allocated_height(flutter_widget);
 
-    gdouble scale_x = 1.0;
-    gdouble scale_y = 1.0;
+    // Prefer FlView_alloc / viewLogical when settled (≈ DPR / fractional scale).
+    // During maximize/restore Dart's renderView.size often updates a frame or
+    // two before GTK reallocates FlView (or vice versa). Using the mismatched
+    // ratio scales overlay x/width incorrectly — left into the mail list or
+    // right into empty compose chrome. Fall back to DPR while they disagree.
+    const gdouble dpr =
+        device_pixel_ratio > 0.01 ? device_pixel_ratio : 1.0;
+    gdouble scale_x = dpr;
+    gdouble scale_y = dpr;
     if (flutter_view_w > 1.0 && view_px_w > 0)
-      scale_x = (gdouble)view_px_w / flutter_view_w;
-    else if (device_pixel_ratio > 0.01)
-      scale_x = device_pixel_ratio;
-
+    {
+      const gdouble from_view = (gdouble)view_px_w / flutter_view_w;
+      if (fabs(from_view - dpr) <= 0.08)
+        scale_x = from_view;
+    }
     if (flutter_view_h > 1.0 && view_px_h > 0)
-      scale_y = (gdouble)view_px_h / flutter_view_h;
-    else if (device_pixel_ratio > 0.01)
-      scale_y = device_pixel_ratio;
+    {
+      const gdouble from_view = (gdouble)view_px_h / flutter_view_h;
+      if (fabs(from_view - dpr) <= 0.08)
+        scale_y = from_view;
+    }
 
     // Translate FlView origin into GtkOverlay coordinates. This is the only
     // correct way to combine widget spaces when FlView is nested in the
@@ -846,10 +856,10 @@ static gboolean on_parent_configure_event(GtkWidget *widget, GdkEventConfigure *
     if (!unchanged)
     {
       // Ask Dart to re-measure the Flutter placeholder after the compositor settles.
-      // Do not re-assert cached GdkWindow bounds here — on maximize/restore that
-      // fights fresh Dart setBounds and leaves the WebKit surface misaligned.
+      // Do NOT re-assert cached last_screen_* here (even deferred): those pixels
+      // were computed under the previous FlView allocation/scale and will yank
+      // the surface left/right after maximize or restore.
       emit_host_layout_changed(instance);
-      g_timeout_add(48, idle_force_overlay_child_bounds, instance);
     }
     return FALSE;
   }

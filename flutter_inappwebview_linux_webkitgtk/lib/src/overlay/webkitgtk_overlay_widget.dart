@@ -284,15 +284,24 @@ class _WebKitGtkOverlayWidgetState extends State<WebKitGtkOverlayWidget>
     );
   }
 
-  /// Shell-nested reader claims [activeEmbeddedViewId]; composer (root nav) does not.
+  /// Shell-nested **mailbox reader** claims [activeEmbeddedViewId].
+  ///
+  /// Composer / page-builder (root-nav dialogs **or** in-shell workspace tabs
+  /// under [exclusiveShellViewId]) must not claim — host maximize repair pushes
+  /// reader-slot geometry to [activeEmbeddedViewId], which would misplace those
+  /// surfaces.
   void _maybeClaimActiveReader() {
     if (!_nativeVisible || !mounted) return;
     final route = ModalRoute.of(context);
     final rootNav = Navigator.maybeOf(context, rootNavigator: true);
     final isOnRootNav = route?.navigator == rootNav;
-    if (!isOnRootNav) {
-      WebKitGtkOverlayHooks.activeEmbeddedViewId = _viewId;
+    if (isOnRootNav) return;
+    // In-shell compose / page-builder: host sets exclusive to the visible
+    // surface. Never let that surface steal the reader id.
+    if (WebKitGtkOverlayHooks.exclusiveShellViewId.value != null) {
+      return;
     }
+    WebKitGtkOverlayHooks.activeEmbeddedViewId = _viewId;
   }
 
   void _scheduleNativeBoundsSync({int frames = 1}) {
