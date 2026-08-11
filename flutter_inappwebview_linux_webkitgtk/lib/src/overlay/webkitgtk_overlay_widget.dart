@@ -82,6 +82,8 @@ class _WebKitGtkOverlayWidgetState extends State<WebKitGtkOverlayWidget>
   Size? _lastLayoutConstraints;
   Size? _pendingMeasurementSize;
   Offset? _pendingMeasurementOrigin;
+  Offset? _lastKnownPlaceholderOrigin;
+  Size? _lastKnownPlaceholderSize;
   int _stableMeasurementFrames = 0;
   int _geometrySequence = 0;
   WebKitGtkOverlayGeometry? _lastSentGeometry;
@@ -525,8 +527,15 @@ class _WebKitGtkOverlayWidgetState extends State<WebKitGtkOverlayWidget>
             _lastLayoutConstraints != nextConstraints) {
           _lastLayoutConstraints = nextConstraints;
           _lastSentGeometry = null;
-          _scheduleNativeBoundsSync(frames: 3);
+          _scheduleNativeBoundsSync(frames: 5);
         }
+
+        // After layout: catch sidebar/Sentria moves where constraints are
+        // unchanged for a frame but the placeholder origin shifted.
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted || !_nativeVisible) return;
+          _resyncIfPlaceholderMoved();
+        });
 
         return MouseRegion(
           onEnter: (_) => _syncNativeWindowPosition(bypassDebounce: true),
@@ -549,10 +558,68 @@ class _WebKitGtkOverlayWidgetState extends State<WebKitGtkOverlayWidget>
     );
   }
 
+  void _resyncIfPlaceholderMoved() {
+    final placeholderContext = _placeholderKey.currentContext;
+    if (placeholderContext == null) return;
+    final placeholderBox =
+        placeholderContext.findRenderObject() as RenderBox?;
+    final renderView = renderViewForContext(placeholderContext) ??
+        (RendererBinding.instance.renderViews.isEmpty
+            ? null
+            : RendererBinding.instance.renderViews.first);
+    if (placeholderBox == null ||
+        !placeholderBox.hasSize ||
+        renderView == null) {
+      return;
+    }
+    final measured = measureFlViewLogicalRect(
+      placeholder: placeholderBox,
+      renderView: renderView,
+    );
+    if (measured == null) return;
+    final origin = measured.topLeft;
+    final size = measured.size;
+    const epsilon = 0.5;
+    final moved = _lastKnownPlaceholderOrigin == null ||
+        (_lastKnownPlaceholderOrigin!.dx - origin.dx).abs() >= epsilon ||
+        (_lastKnownPlaceholderOrigin!.dy - origin.dy).abs() >= epsilon;
+    final resized = _lastKnownPlaceholderSize == null ||
+        (_lastKnownPlaceholderSize!.width - size.width).abs() >= epsilon ||
+        (_lastKnownPlaceholderSize!.height - size.height).abs() >= epsilon;
+    if (!moved && !resized) return;
+    _lastKnownPlaceholderOrigin = origin;
+    _lastKnownPlaceholderSize = size;
+    _lastSentGeometry = null;
+    _syncNativeWindowPosition(bypassDebounce: true);
+  }
+
   Future<void> _grabNativeFocus() async {
     if (!_isInitialized) return;
     try {
       await _controller?.grabFocus();
+    } catch (_) {}
+  }
+
+  Future<void> _notifyPageHostResized() async {
+    final controller = _controller;
+    if (controller == null || !_isInitialized) return;
+    try {
+      await controller.evaluateJavaScript('''
+(function(){
+  try{
+    if(window.__scommOnHostResize){window.__scommOnHostResize();return 'hook';}
+    var root=document.getElementById('scomm-scroll-root');
+    if(root){
+      var maxL=Math.max(0,(root.scrollWidth||0)-(root.clientWidth||0));
+      var maxT=Math.max(0,(root.scrollHeight||0)-(root.clientHeight||0));
+      if(root.scrollLeft>maxL)root.scrollLeft=maxL;
+      if(root.scrollTop>maxT)root.scrollTop=maxT;
+    }
+    window.dispatchEvent(new Event('resize'));
+    return 'fallback';
+  }catch(e){return String(e);}
+})()
+''');
     } catch (_) {}
   }
 
@@ -685,6 +752,9 @@ class _WebKitGtkOverlayWidgetState extends State<WebKitGtkOverlayWidget>
           'setBounds',
           target.toMethodChannelArgs(),
         );
+        // Clamp HTML scroll + fire resize so wide mail / media queries reflow
+        // after sidebar, Sentria, or maximize change the surface size.
+        unawaited(_notifyPageHostResized());
         if (_nativeVisible) {
           // Ensure surface is shown after bounds land (hide may have raced).
           unawaited(_setNativeVisibility(true));

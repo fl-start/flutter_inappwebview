@@ -227,6 +227,10 @@ static void apply_embedded_bounds(
   // Apply immediately (do not wait for the next idle layout pass).
   force_overlay_child_gdk_window_bounds(instance);
   g_idle_add(idle_force_overlay_child_bounds, instance);
+  // Second idle pass after GtkOverlay finishes get-child-position — catches
+  // sidebar/Sentria/maximize races where the first assert ran on a stale host.
+  g_timeout_add(32, idle_force_overlay_child_bounds, instance);
+  g_timeout_add(120, idle_force_overlay_child_bounds, instance);
 
   coord_print("🐧 %s: %dx%d @ embedded(%d,%d) (view_id: %ld)\n",
           log_prefix, bounded_width, bounded_height, bounded_x, bounded_y, instance->view_id);
