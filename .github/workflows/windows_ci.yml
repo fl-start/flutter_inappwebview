@@ -1,0 +1,55 @@
+name: Windows CI
+
+on:
+  push:
+    branches: [master, main]
+    paths:
+      - ".github/workflows/windows_ci.yml"
+      - "flutter_inappwebview/**"
+      - "flutter_inappwebview_windows/**"
+      - "flutter_inappwebview_platform_interface/**"
+  pull_request:
+    branches: [master, main]
+    paths:
+      - ".github/workflows/windows_ci.yml"
+      - "flutter_inappwebview/**"
+      - "flutter_inappwebview_windows/**"
+      - "flutter_inappwebview_platform_interface/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze-and-test:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: flutter_inappwebview_windows
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - run: dart analyze --fatal-infos
+      - run: flutter test
+
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: flutter_inappwebview/example
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - run: flutter build windows --debug

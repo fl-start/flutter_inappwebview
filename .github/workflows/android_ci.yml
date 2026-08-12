@@ -1,0 +1,61 @@
+name: Android CI
+
+on:
+  push:
+    branches: [master, main]
+    paths:
+      - ".github/workflows/android_ci.yml"
+      - "flutter_inappwebview/**"
+      - "flutter_inappwebview_android/**"
+      - "flutter_inappwebview_platform_interface/**"
+  pull_request:
+    branches: [master, main]
+    paths:
+      - ".github/workflows/android_ci.yml"
+      - "flutter_inappwebview/**"
+      - "flutter_inappwebview_android/**"
+      - "flutter_inappwebview_platform_interface/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze-and-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: flutter_inappwebview_android
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - run: dart analyze --fatal-infos
+      - run: flutter test
+
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: flutter_inappwebview/example
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - run: flutter pub get
+      - run: flutter build apk --debug
+        env:
+          GRADLE_OPTS: -Xmx4g -Dorg.gradle.daemon=false -Dorg.gradle.jvmargs=-Xmx4g

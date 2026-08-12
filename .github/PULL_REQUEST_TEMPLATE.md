@@ -8,6 +8,15 @@ Connected to #???
 
 <!-- Optional: other issues or pull requests related to this, but merging should not close it -->
 
+## Platform scope (fl-start fork)
+
+- [ ] PR touches **one** platform package when possible (`flutter_inappwebview_windows`, `flutter_inappwebview_linux_webkitgtk`, `flutter_inappwebview_macos`, `flutter_inappwebview_android`, or `flutter_inappwebview_ios`)
+- [ ] If `flutter_inappwebview_platform_interface` changed, all affected platform implementations updated
+- [ ] `tool/secmail_pins.yaml` updated when secMail should bump a tier ref
+- [ ] Ran `scripts/check_platform_scope.sh` for desktop/mobile cross-package diffs
+
+See [docs/FL_START_MONOREPO.md](docs/FL_START_MONOREPO.md).
+
 ## Testing and Review Notes
 
 <!-- Required: steps to take to confirm this works as expected or other guidance for code, UX, and any other reviewers -->

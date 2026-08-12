@@ -1,0 +1,46 @@
+name: flutter_inappwebview
+repository: https://github.com/fl-start/flutter_inappwebview
+
+packages:
+  - flutter_inappwebview
+  - flutter_inappwebview_platform_interface
+  - flutter_inappwebview_android
+  - flutter_inappwebview_ios
+  - flutter_inappwebview_macos
+  - flutter_inappwebview_windows
+  - flutter_inappwebview_linux_webkitgtk
+  - flutter_inappwebview_web
+  - dev_packages/flutter_inappwebview_internal_annotations
+
+command:
+  bootstrap:
+    usePubspecOverrides: true
+
+scripts:
+  analyze:shared:
+    run: dart analyze --fatal-infos
+    packageFilters:
+      dirExists: lib
+      scope:
+        - flutter_inappwebview
+        - flutter_inappwebview_platform_interface
+  analyze:linux:
+    run: dart analyze --fatal-infos
+    packageFilters:
+      scope: flutter_inappwebview_linux_webkitgtk
+  analyze:windows:
+    run: dart analyze --fatal-infos
+    packageFilters:
+      scope: flutter_inappwebview_windows
+  analyze:macos:
+    run: dart analyze --fatal-infos
+    packageFilters:
+      scope: flutter_inappwebview_macos
+  analyze:android:
+    run: dart analyze --fatal-infos
+    packageFilters:
+      scope: flutter_inappwebview_android
+  analyze:ios:
+    run: dart analyze --fatal-infos
+    packageFilters:
+      scope: flutter_inappwebview_ios
