@@ -1,5 +1,11 @@
 ## 0.7.0-beta.3
 
+- Windows: CDP `Fetch.enable` for `shouldOverrideUrlLoading` now matches only
+  `http(s)` Document navigations. Custom-scheme main-frame loads (e.g. `appmsg://`)
+  were paused by Fetch and never completed after `Fetch.continueRequest`, leaving
+  the WebView on `about:blank`. Custom schemes are handled via
+  `WebResourceRequested` / `onLoadResourceWithCustomScheme` instead.
+- Windows: skip `Fetch.enable` entirely when `useShouldOverrideUrlLoading` is false.
 - Updated flutter_inappwebview_platform_interface version to ^1.4.0-beta.3
 - Updated Microsoft.Web.WebView2 SDK version from `1.0.2849.39` to `1.0.3650.58`
 - Implemented `getFrameId`, `getFavicon`, `showSaveAsUI`, `getMemoryUsageTargetLevel`, `setMemoryUsageTargetLevel` InAppWebViewController method

@@ -305,14 +305,27 @@ namespace flutter_inappwebview_plugin
       }
     ).Get()));
 
-    // required to use Fetch domain and implement the shouldOverrideUrlLoading event correctly
-    failedLog(webView->CallDevToolsProtocolMethod(L"Fetch.enable", L"{\"patterns\": [{\"resourceType\": \"Document\", \"requestStage\": \"Request\"}]}", Callback<ICoreWebView2CallDevToolsProtocolMethodCompletedHandler>(
-      [this](HRESULT errorCode, LPCWSTR returnObjectAsJson)
-      {
-        failedLog(errorCode);
-        return S_OK;
-      }
-    ).Get()));
+    // shouldOverrideUrlLoading is implemented via CDP Fetch on Document requests.
+    // Restrict patterns to http(s) only: pausing custom-scheme Document navigations
+    // (e.g. appmsg://) and then Fetch.continueRequest leaves the WebView stuck on
+    // about:blank — WebResourceRequested / onLoadResourceWithCustomScheme never
+    // delivers the main-frame bytes. Custom schemes therefore bypass Fetch and
+    // are handled by WebResourceRequested (+ NavigationStarting).
+    if (settings->useShouldOverrideUrlLoading) {
+      failedLog(webView->CallDevToolsProtocolMethod(
+        L"Fetch.enable",
+        L"{\"patterns\":["
+        L"{\"urlPattern\":\"http://*\",\"resourceType\":\"Document\",\"requestStage\":\"Request\"},"
+        L"{\"urlPattern\":\"https://*\",\"resourceType\":\"Document\",\"requestStage\":\"Request\"}"
+        L"]}",
+        Callback<ICoreWebView2CallDevToolsProtocolMethodCompletedHandler>(
+          [this](HRESULT errorCode, LPCWSTR returnObjectAsJson)
+          {
+            failedLog(errorCode);
+            return S_OK;
+          }
+        ).Get()));
+    }
 
     failedLog(webView->CallDevToolsProtocolMethod(L"Page.getFrameTree", L"{}", Callback<ICoreWebView2CallDevToolsProtocolMethodCompletedHandler>(
       [this](HRESULT errorCode, LPCWSTR returnObjectAsJson)
@@ -406,6 +419,10 @@ namespace flutter_inappwebview_plugin
                 url = url.value() + urlFragment.value();
               }
               auto isForMainFrame = pageFrameId_.empty() || string_equals(pageFrameId_, frameId);
+              const auto requestUrl = url.value_or("");
+              const auto isHttpDocument =
+                starts_with(requestUrl, std::string{ "http://" }) ||
+                starts_with(requestUrl, std::string{ "https://" });
 
               auto allowRequest = [this, requestId, url, isForMainFrame]()
                 {
@@ -440,6 +457,13 @@ namespace flutter_inappwebview_plugin
                       }
                     ).Get()));
                 };
+
+              // Defense in depth: never run shouldOverride / Fetch policy for
+              // custom-scheme Documents (see Fetch.enable urlPattern note above).
+              if (!isResponseStage && !isHttpDocument && string_equals(resourceType, "Document")) {
+                allowRequest();
+                return S_OK;
+              }
 
               if (!isResponseStage && channelDelegate && settings->useShouldOverrideUrlLoading && string_equals(resourceType, "Document")) {
                 std::optional<std::string> method = request.at("method").is_string() ? request.at("method").get<std::string>() : std::optional<std::string>{};
