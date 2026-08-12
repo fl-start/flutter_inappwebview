@@ -200,9 +200,18 @@ class _WebKitGtkOverlayWidgetState extends State<WebKitGtkOverlayWidget>
       );
       _nativeVisible = shouldBeVisible;
       _setNativeVisibility(shouldBeVisible);
+      // Offstage→visible (compose tab): drop stale geometry so the first
+      // setBounds cannot reuse warm-create / wrong-X coords over the inbox.
+      if (shouldBeVisible) {
+        _lastSentGeometry = null;
+        _pendingMeasurementSize = null;
+        _pendingMeasurementOrigin = null;
+        _stableMeasurementFrames = 0;
+        WebKitGtkOverlayHooks.forceImmediateBoundsSync = true;
+      }
     }
     if (shouldBeVisible) {
-      _scheduleNativeBoundsSync(frames: 3);
+      _scheduleNativeBoundsSync(frames: 5);
     }
   }
 
