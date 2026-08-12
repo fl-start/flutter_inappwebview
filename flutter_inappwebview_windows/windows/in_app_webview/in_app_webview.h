@@ -176,6 +176,11 @@ namespace flutter_inappwebview_plugin
       return isLoading_;
     }
     void stopLoading() const;
+    /// Move keyboard focus into the WebView2 document (required for typing into
+    /// contenteditable / TipTap under Flutter's composition host).
+    bool requestFocus() const;
+    /// Best-effort release of WebView2 keyboard focus back to the host.
+    bool clearFocus() const;
     void evaluateJavascript(const std::string& source, const std::shared_ptr<ContentWorld> contentWorld, const std::function<void(std::string)> completionHandler) const;
     void callAsyncJavaScript(const std::string& functionBody, const std::string& argumentsAsJson, const std::shared_ptr<ContentWorld> contentWorld, const std::function<void(std::string)> completionHandler) const;
     void getCopyBackForwardList(const std::function<void(std::unique_ptr<WebHistory>)> completionHandler) const;

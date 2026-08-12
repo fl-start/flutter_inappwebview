@@ -219,6 +219,12 @@ namespace flutter_inappwebview_plugin
       webView->stopLoading();
       result->Success(true);
     }
+    else if (string_equals(methodName, "requestFocus")) {
+      result->Success(webView->requestFocus());
+    }
+    else if (string_equals(methodName, "clearFocus")) {
+      result->Success(webView->clearFocus());
+    }
     else if (string_equals(methodName, "evaluateJavascript")) {
       auto result_ = std::shared_ptr<flutter::MethodResult<flutter::EncodableValue>>(std::move(result));
 

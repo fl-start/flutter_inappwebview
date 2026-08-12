@@ -3478,6 +3478,21 @@ class WindowsInAppWebViewController extends PlatformInAppWebViewController
   }
 
   @override
+  Future<bool?> requestFocus({
+    FocusDirection? direction,
+    InAppWebViewRect? previouslyFocusedRect,
+  }) async {
+    Map<String, dynamic> args = <String, dynamic>{};
+    return await channel?.invokeMethod<bool>('requestFocus', args);
+  }
+
+  @override
+  Future<void> clearFocus() async {
+    Map<String, dynamic> args = <String, dynamic>{};
+    await channel?.invokeMethod('clearFocus', args);
+  }
+
+  @override
   void dispose({bool isKeepAlive = false}) {
     disposeChannel(removeMethodCallHandler: !isKeepAlive);
     _inAppBrowser = null;

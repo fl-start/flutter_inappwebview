@@ -1,5 +1,9 @@
 ## 0.7.0-beta.3
 
+- Windows: call `ICoreWebView2Controller::MoveFocus` on mouse-down and expose
+  `requestFocus` / `clearFocus` so composition-hosted WebView2 receives keyboard
+  input on the first click (TipTap / contenteditable no longer need a second
+  click before typing works).
 - Windows: custom-scheme Document navigations (e.g. `appmsg://`) paused by CDP
   `Fetch` for `shouldOverrideUrlLoading` are now completed with
   `Fetch.fulfillRequest` using Dart `shouldInterceptRequest` /

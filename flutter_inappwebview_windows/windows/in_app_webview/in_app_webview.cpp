@@ -2375,6 +2375,28 @@ namespace flutter_inappwebview_plugin
     failedLog(webView->Stop());
   }
 
+  bool InAppWebView::requestFocus() const
+  {
+    if (!webViewController) {
+      return false;
+    }
+    // Programmatic keyboard focus into the hosted document. Mouse-down also
+    // calls MoveFocus (see setPointerButtonState) for the first-click case.
+    return SUCCEEDED(
+      webViewController->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC));
+  }
+
+  bool InAppWebView::clearFocus() const
+  {
+    // WebView2 has no explicit blur API. Moving focus "next" releases the
+    // document so Flutter widgets can receive keys again.
+    if (!webViewController) {
+      return false;
+    }
+    return SUCCEEDED(
+      webViewController->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_NEXT));
+  }
+
   void InAppWebView::getCopyBackForwardList(const std::function<void(std::unique_ptr<WebHistory>)> completionHandler) const
   {
     if (!webView) {
@@ -3922,6 +3944,12 @@ namespace flutter_inappwebview_plugin
 
     switch (kind) {
     case InAppWebViewPointerEventKind::Down:
+      // Composition-hosted WebView2 does not take keyboard focus from mouse
+      // input alone — without MoveFocus, the first click paints a caret but
+      // key events stay with Flutter until a second click.
+      if (webViewController) {
+        webViewController->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC);
+      }
       switch (button) {
       case InAppWebViewPointerButton::Primary:
         virtualKeys_.setIsLeftButtonDown(true);
