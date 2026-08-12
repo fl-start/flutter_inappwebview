@@ -1,3 +1,6 @@
+#include <string>
+#include <vector>
+
 #include "../utils/flutter.h"
 #include "../utils/strconv.h"
 #include "custom_scheme_registration.h"
@@ -31,9 +34,17 @@ namespace flutter_inappwebview_plugin
     auto customSchemeRegistration = Microsoft::WRL::Make<CoreWebView2CustomSchemeRegistration>(utf8_to_wide(scheme).c_str());
 
     if (allowedOrigins.has_value()) {
-      std::vector<const WCHAR*> wideAllowedOrigins;
+      // Keep owned wstrings alive for the duration of SetAllowedOrigins —
+      // utf8_to_wide(...).c_str() would dangle after each temporary is destroyed.
+      std::vector<std::wstring> wideAllowedOriginsOwned;
+      wideAllowedOriginsOwned.reserve(allowedOrigins.value().size());
       for (const auto& origin : allowedOrigins.value()) {
-        wideAllowedOrigins.push_back(utf8_to_wide(origin).c_str());
+        wideAllowedOriginsOwned.push_back(utf8_to_wide(origin));
+      }
+      std::vector<const WCHAR*> wideAllowedOrigins;
+      wideAllowedOrigins.reserve(wideAllowedOriginsOwned.size());
+      for (const auto& wide : wideAllowedOriginsOwned) {
+        wideAllowedOrigins.push_back(wide.c_str());
       }
       customSchemeRegistration->SetAllowedOrigins(
         static_cast<UINT32>(wideAllowedOrigins.size()),

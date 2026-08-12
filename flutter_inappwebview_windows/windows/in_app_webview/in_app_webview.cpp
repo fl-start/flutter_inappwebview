@@ -306,25 +306,18 @@ namespace flutter_inappwebview_plugin
     ).Get()));
 
     // shouldOverrideUrlLoading is implemented via CDP Fetch on Document requests.
-    // Restrict patterns to http(s) only: pausing custom-scheme Document navigations
-    // (e.g. appmsg://) and then Fetch.continueRequest leaves the WebView stuck on
-    // about:blank — WebResourceRequested / onLoadResourceWithCustomScheme never
-    // delivers the main-frame bytes. Custom schemes therefore bypass Fetch and
-    // are handled by WebResourceRequested (+ NavigationStarting).
+    // Custom-scheme Documents (e.g. appmsg://) must NOT use Fetch.continueRequest —
+    // that leaves the WebView on about:blank. After shouldOverride allows them we
+    // fulfill via Dart shouldInterceptRequest / onLoadResourceWithCustomScheme and
+    // Fetch.fulfillRequest (see requestPaused handler below).
     if (settings->useShouldOverrideUrlLoading) {
-      failedLog(webView->CallDevToolsProtocolMethod(
-        L"Fetch.enable",
-        L"{\"patterns\":["
-        L"{\"urlPattern\":\"http://*\",\"resourceType\":\"Document\",\"requestStage\":\"Request\"},"
-        L"{\"urlPattern\":\"https://*\",\"resourceType\":\"Document\",\"requestStage\":\"Request\"}"
-        L"]}",
-        Callback<ICoreWebView2CallDevToolsProtocolMethodCompletedHandler>(
-          [this](HRESULT errorCode, LPCWSTR returnObjectAsJson)
-          {
-            failedLog(errorCode);
-            return S_OK;
-          }
-        ).Get()));
+      failedLog(webView->CallDevToolsProtocolMethod(L"Fetch.enable", L"{\"patterns\": [{\"resourceType\": \"Document\", \"requestStage\": \"Request\"}]}", Callback<ICoreWebView2CallDevToolsProtocolMethodCompletedHandler>(
+        [this](HRESULT errorCode, LPCWSTR returnObjectAsJson)
+        {
+          failedLog(errorCode);
+          return S_OK;
+        }
+      ).Get()));
     }
 
     failedLog(webView->CallDevToolsProtocolMethod(L"Page.getFrameTree", L"{}", Callback<ICoreWebView2CallDevToolsProtocolMethodCompletedHandler>(
@@ -424,7 +417,18 @@ namespace flutter_inappwebview_plugin
                 starts_with(requestUrl, std::string{ "http://" }) ||
                 starts_with(requestUrl, std::string{ "https://" });
 
-              auto allowRequest = [this, requestId, url, isForMainFrame]()
+              auto markLoadStart = [this, url, isForMainFrame]()
+                {
+                  if (channelDelegate && isForMainFrame) {
+                    // if shouldOverrideUrlLoading is used, then call onLoadStart and onProgressChanged here
+                    // to match the behaviour of the other platforms
+                    channelDelegate->onLoadStart(url);
+                    progress_ = 0;
+                    channelDelegate->onProgressChanged(progress_);
+                  }
+                };
+
+              auto allowRequest = [this, requestId, markLoadStart]()
                 {
                   failedAndLog(webView->CallDevToolsProtocolMethod(L"Fetch.continueRequest",
                     utf8_to_wide("{\"requestId\":\"" + requestId + "\"}").c_str(),
@@ -436,13 +440,7 @@ namespace flutter_inappwebview_plugin
                       }
                     ).Get()));
 
-                  if (channelDelegate && isForMainFrame) {
-                    // if shouldOverrideUrlLoading is used, then call onLoadStart and onProgressChanged here
-                    // to match the behaviour of the other platforms
-                    channelDelegate->onLoadStart(url);
-                    progress_ = 0;
-                    channelDelegate->onProgressChanged(progress_);
-                  }
+                  markLoadStart();
                 };
 
               auto cancelRequest = [this, requestId]()
@@ -458,12 +456,129 @@ namespace flutter_inappwebview_plugin
                     ).Get()));
                 };
 
-              // Defense in depth: never run shouldOverride / Fetch policy for
-              // custom-scheme Documents (see Fetch.enable urlPattern note above).
-              if (!isResponseStage && !isHttpDocument && string_equals(resourceType, "Document")) {
-                allowRequest();
-                return S_OK;
-              }
+              // Custom-scheme Documents cannot use Fetch.continueRequest (stuck on
+              // about:blank). Fulfill with bytes from Dart intercept / custom-scheme handlers.
+              auto fulfillCustomSchemeDocument = [this, requestId, markLoadStart](
+                const std::optional<std::string>& contentType,
+                const std::optional<std::string>& contentEncoding,
+                const std::optional<int64_t>& statusCode,
+                const std::optional<std::map<std::string, std::string>>& headers,
+                const std::optional<std::vector<uint8_t>>& data)
+                {
+                  nlohmann::json params;
+                  params["requestId"] = requestId;
+                  params["responseCode"] = statusCode.value_or(200);
+                  nlohmann::json responseHeaders = nlohmann::json::array();
+                  if (headers.has_value()) {
+                    for (auto const& [key, val] : headers.value()) {
+                      responseHeaders.push_back({ {"name", key}, {"value", val} });
+                    }
+                  }
+                  if (contentType.has_value() && !contentType.value().empty()) {
+                    responseHeaders.push_back({ {"name", "Content-Type"}, {"value", contentType.value()} });
+                  }
+                  if (contentEncoding.has_value() && !contentEncoding.value().empty()) {
+                    responseHeaders.push_back({ {"name", "Content-Encoding"}, {"value", contentEncoding.value()} });
+                  }
+                  params["responseHeaders"] = responseHeaders;
+                  if (data.has_value() && !data.value().empty()) {
+                    params["body"] = ::base64_encode(
+                      reinterpret_cast<const unsigned char*>(data.value().data()),
+                      data.value().size());
+                  }
+                  else {
+                    params["body"] = "";
+                  }
+
+                  failedAndLog(webView->CallDevToolsProtocolMethod(
+                    L"Fetch.fulfillRequest",
+                    utf8_to_wide(params.dump()).c_str(),
+                    Callback<ICoreWebView2CallDevToolsProtocolMethodCompletedHandler>(
+                      [this](HRESULT errorCode, LPCWSTR returnObjectAsJson)
+                      {
+                        failedLog(errorCode);
+                        return S_OK;
+                      }
+                    ).Get()));
+
+                  markLoadStart();
+                };
+
+              auto provideCustomSchemeDocument = [this, cancelRequest, fulfillCustomSchemeDocument, url, isForMainFrame](
+                const std::optional<std::string>& method,
+                const std::optional<std::map<std::string, std::string>>& headers)
+                {
+                  if (!channelDelegate) {
+                    cancelRequest();
+                    return;
+                  }
+
+                  auto resourceRequest = std::make_shared<WebResourceRequest>(url, method, headers, isForMainFrame);
+
+                  auto tryCustomScheme = [this, resourceRequest, fulfillCustomSchemeDocument, cancelRequest]()
+                    {
+                      auto customCallback = std::make_unique<WebViewChannelDelegate::LoadResourceWithCustomSchemeCallback>();
+                      customCallback->nonNullSuccess = [fulfillCustomSchemeDocument](const std::shared_ptr<CustomSchemeResponse> response)
+                        {
+                          fulfillCustomSchemeDocument(
+                            std::optional<std::string>(response->contentType),
+                            std::optional<std::string>(response->contentEncoding),
+                            200,
+                            std::nullopt,
+                            std::optional<std::vector<uint8_t>>(response->data));
+                          return false;
+                        };
+                      customCallback->nullSuccess = [cancelRequest]()
+                        {
+                          cancelRequest();
+                          return false;
+                        };
+                      auto defaultBehaviour = [cancelRequest](const std::optional<std::shared_ptr<CustomSchemeResponse>>)
+                        {
+                          cancelRequest();
+                        };
+                      customCallback->defaultBehaviour = defaultBehaviour;
+                      customCallback->error = [defaultBehaviour](const std::string& error_code, const std::string& error_message, const flutter::EncodableValue* error_details)
+                        {
+                          debugLog(error_code + ", " + error_message);
+                          defaultBehaviour(std::nullopt);
+                        };
+                      channelDelegate->onLoadResourceWithCustomScheme(resourceRequest, std::move(customCallback));
+                    };
+
+                  if (settings->useShouldInterceptRequest) {
+                    auto interceptCallback = std::make_unique<WebViewChannelDelegate::ShouldInterceptRequestCallback>();
+                    interceptCallback->nonNullSuccess = [fulfillCustomSchemeDocument](const std::shared_ptr<WebResourceResponse> response)
+                      {
+                        fulfillCustomSchemeDocument(
+                          response->contentType,
+                          response->contentEncoding,
+                          response->statusCode,
+                          response->headers,
+                          response->data);
+                        return false;
+                      };
+                    interceptCallback->nullSuccess = [tryCustomScheme]()
+                      {
+                        tryCustomScheme();
+                        return false;
+                      };
+                    auto defaultBehaviour = [tryCustomScheme](const std::optional<std::shared_ptr<WebResourceResponse>>)
+                      {
+                        tryCustomScheme();
+                      };
+                    interceptCallback->defaultBehaviour = defaultBehaviour;
+                    interceptCallback->error = [defaultBehaviour](const std::string& error_code, const std::string& error_message, const flutter::EncodableValue* error_details)
+                      {
+                        debugLog(error_code + ", " + error_message);
+                        defaultBehaviour(std::nullopt);
+                      };
+                    channelDelegate->shouldInterceptRequest(resourceRequest, std::move(interceptCallback));
+                  }
+                  else {
+                    tryCustomScheme();
+                  }
+                };
 
               if (!isResponseStage && channelDelegate && settings->useShouldOverrideUrlLoading && string_equals(resourceType, "Document")) {
                 std::optional<std::string> method = request.at("method").is_string() ? request.at("method").get<std::string>() : std::optional<std::string>{};
@@ -509,19 +624,28 @@ namespace flutter_inappwebview_plugin
                 );
 
                 auto callback = std::make_unique<WebViewChannelDelegate::ShouldOverrideUrlLoadingCallback>();
-                callback->nonNullSuccess = [this, allowRequest, cancelRequest](const NavigationActionPolicy actionPolicy)
+                callback->nonNullSuccess = [allowRequest, cancelRequest, provideCustomSchemeDocument, isHttpDocument, method, headers](const NavigationActionPolicy actionPolicy)
                   {
-                    if (actionPolicy == NavigationActionPolicy::allow) {
+                    if (actionPolicy != NavigationActionPolicy::allow) {
+                      cancelRequest();
+                      return false;
+                    }
+                    if (isHttpDocument) {
                       allowRequest();
                     }
                     else {
-                      cancelRequest();
+                      provideCustomSchemeDocument(method, headers);
                     }
                     return false;
                   };
-                auto defaultBehaviour = [this, allowRequest](const std::optional<const NavigationActionPolicy> actionPolicy)
+                auto defaultBehaviour = [allowRequest, provideCustomSchemeDocument, isHttpDocument, method, headers](const std::optional<const NavigationActionPolicy> actionPolicy)
                   {
-                    allowRequest();
+                    if (isHttpDocument) {
+                      allowRequest();
+                    }
+                    else {
+                      provideCustomSchemeDocument(method, headers);
+                    }
                   };
                 callback->defaultBehaviour = defaultBehaviour;
                 callback->error = [defaultBehaviour](const std::string& error_code, const std::string& error_message, const flutter::EncodableValue* error_details)
