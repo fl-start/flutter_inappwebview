@@ -21,6 +21,7 @@ Repository: https://github.com/fl-start/flutter_inappwebview
 
 - `flutter_inappwebview_linux` — upstream **WPE** implementation. secMail uses
   **`flutter_inappwebview_linux_webkitgtk`** (GtkOverlay + WebKitGTK 4.1) instead.
+  WebKitGTK 4.0 / libsoup 2 are unsupported.
 
 ## Consumer pinning (`tool/secmail_pins.yaml`)
 
