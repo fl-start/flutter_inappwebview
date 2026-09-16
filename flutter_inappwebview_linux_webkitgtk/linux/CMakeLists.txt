@@ -5,28 +5,45 @@ set(PLUGIN_NAME "flutter_inappwebview_linux_webkitgtk_plugin")
 
 find_package(PkgConfig REQUIRED)
 
+pkg_check_modules(GTK IMPORTED_TARGET gtk+-3.0)
 pkg_check_modules(WEBKIT2GTK IMPORTED_TARGET webkit2gtk-4.1)
-if(NOT WEBKIT2GTK_FOUND)
-  pkg_check_modules(WEBKIT2GTK IMPORTED_TARGET webkit2gtk-4.0)
-  if(NOT WEBKIT2GTK_FOUND)
-    message(FATAL_ERROR "WebKitGTK not found. Install libwebkit2gtk-4.1-dev or libwebkit2gtk-4.0-dev")
-  endif()
-  message(STATUS "flutter_inappwebview_linux_webkitgtk: Using WebKitGTK 4.0")
-  pkg_check_modules(LIBSOUP REQUIRED IMPORTED_TARGET libsoup-2.4)
-else()
-  message(STATUS "flutter_inappwebview_linux_webkitgtk: Using WebKitGTK 4.1")
-  pkg_check_modules(LIBSOUP REQUIRED IMPORTED_TARGET libsoup-3.0)
-endif()
-
 pkg_check_modules(JAVASCRIPTCORE IMPORTED_TARGET javascriptcoregtk-4.1)
-if(NOT JAVASCRIPTCORE_FOUND)
-  pkg_check_modules(JAVASCRIPTCORE IMPORTED_TARGET javascriptcoregtk-4.0)
-  if(NOT JAVASCRIPTCORE_FOUND)
-    message(FATAL_ERROR "JavaScriptCore not found. Install libjavascriptcoregtk-4.1-dev or libjavascriptcoregtk-4.0-dev")
-  endif()
-endif()
+pkg_check_modules(LIBSOUP IMPORTED_TARGET libsoup-3.0)
 
-pkg_check_modules(GTK REQUIRED IMPORTED_TARGET gtk+-3.0)
+set(_scomm_linux_webkitgtk_missing "")
+if(NOT GTK_FOUND)
+  list(APPEND _scomm_linux_webkitgtk_missing "gtk+-3.0")
+endif()
+if(NOT WEBKIT2GTK_FOUND)
+  list(APPEND _scomm_linux_webkitgtk_missing "webkit2gtk-4.1")
+endif()
+if(NOT JAVASCRIPTCORE_FOUND)
+  list(APPEND _scomm_linux_webkitgtk_missing "javascriptcoregtk-4.1")
+endif()
+if(NOT LIBSOUP_FOUND)
+  list(APPEND _scomm_linux_webkitgtk_missing "libsoup-3.0")
+endif()
+if(_scomm_linux_webkitgtk_missing)
+  string(REPLACE ";" ", " _scomm_linux_webkitgtk_missing_str
+         "${_scomm_linux_webkitgtk_missing}")
+  message(FATAL_ERROR
+    "Scomm Linux WebKitGTK backend requires:\n"
+    "  gtk+-3.0\n"
+    "  webkit2gtk-4.1\n"
+    "  javascriptcoregtk-4.1\n"
+    "  libsoup-3.0\n"
+    "\n"
+    "WebKitGTK 4.0 / libsoup 2 are no longer supported.\n"
+    "Missing: ${_scomm_linux_webkitgtk_missing_str}")
+endif()
+unset(_scomm_linux_webkitgtk_missing)
+unset(_scomm_linux_webkitgtk_missing_str)
+
+message(STATUS
+  "flutter_inappwebview_linux_webkitgtk: GTK ${GTK_VERSION}, "
+  "WebKitGTK ${WEBKIT2GTK_VERSION}, "
+  "JavaScriptCoreGTK ${JAVASCRIPTCORE_VERSION}, "
+  "libsoup ${LIBSOUP_VERSION}")
 
 set(PLUGIN_SOURCES
   "${CMAKE_CURRENT_SOURCE_DIR}/src/webview_plugin.cc"
