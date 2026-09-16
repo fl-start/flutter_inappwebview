@@ -25,7 +25,7 @@ linux:
     path: flutter_inappwebview_linux_webkitgtk
 
 windows:
-  ref: 7268541e572e229ed2f711ce6f3e266524d0b25e
+  ref: 9b4da6b06f37f22aa61b68f892f69154fdda81d1
   packages:
   - name: flutter_inappwebview_windows
     path: flutter_inappwebview_windows
