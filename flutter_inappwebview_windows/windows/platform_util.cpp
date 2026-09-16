@@ -1,4 +1,5 @@
 #include <ctime>
+#include <windows.h>
 #include <nlohmann/json.hpp>
 #include <Shlwapi.h>
 #include <winrt/base.h>
@@ -55,6 +56,23 @@ namespace flutter_inappwebview_plugin
         window_is_moving_ = false;
         window_start_move_sent_ = false;
         _EmitEvent("onWindowEndMove");
+      }
+    }
+    else if (message == WM_ACTIVATE) {
+      if (LOWORD(wParam) != WA_INACTIVE) {
+        _EmitEvent("onWindowMove");
+      }
+    }
+    else if (message == WM_DISPLAYCHANGE) {
+      _EmitEvent("onWindowMove");
+    }
+    else if (message == WM_POWERBROADCAST) {
+      switch (wParam) {
+        case PBT_APMRESUMEAUTOMATIC:
+        case PBT_APMRESUMESUSPEND:
+        case PBT_APMRESUMECRITICAL:
+          _EmitEvent("onWindowMove");
+          break;
       }
     }
 
