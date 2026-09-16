@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter_inappwebview_linux_webkitgtk/flutter_inappwebview_linux_webkitgtk.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -89,6 +90,36 @@ void main() {
     });
   });
 
+  group('overlayAxisScale', () {
+    test('matches DPR when allocated ratio agrees', () {
+      expect(
+        overlayAxisScale(flutterLogical: 1000, viewPx: 2000, dpr: 2.0),
+        2.0,
+      );
+    });
+
+    test('uses empirical scale within 15 percent of DPR', () {
+      expect(
+        overlayAxisScale(flutterLogical: 1000, viewPx: 1750, dpr: 2.0),
+        1.75,
+      );
+    });
+
+    test('keeps DPR when maximize lag mismatches scale', () {
+      expect(
+        overlayAxisScale(flutterLogical: 1000, viewPx: 1000, dpr: 2.0),
+        2.0,
+      );
+    });
+
+    test('falls back to DPR for invalid logical size', () {
+      expect(
+        overlayAxisScale(flutterLogical: 0, viewPx: 2000, dpr: 2.0),
+        2.0,
+      );
+    });
+  });
+
   group('WebKitGtkOverlayHooks boundsProvider contract', () {
     tearDown(() {
       WebKitGtkOverlayHooks.boundsProvider = null;
@@ -148,6 +179,34 @@ void main() {
       );
       expect(newer.sequence > older.sequence, isTrue);
       expect(older.nearlyEquals(newer), isFalse);
+    });
+  });
+
+  group('measureFlViewLogicalRect', () {
+    testWidgets('returns placeholder size in logical pixels', (tester) async {
+      final key = GlobalKey();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Align(
+            alignment: Alignment.topLeft,
+            child: SizedBox(
+              key: key,
+              width: 200,
+              height: 100,
+              child: const ColoredBox(color: Color(0xFF000000)),
+            ),
+          ),
+        ),
+      );
+      final box = key.currentContext!.findRenderObject()! as RenderBox;
+      final renderView = tester.binding.renderViews.first;
+      final rect = measureFlViewLogicalRect(
+        placeholder: box,
+        renderView: renderView,
+      );
+      expect(rect, isNotNull);
+      expect(rect!.width, closeTo(200, 0.5));
+      expect(rect.height, closeTo(100, 0.5));
     });
   });
 }

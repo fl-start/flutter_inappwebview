@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/rendering.dart';
 import 'package:flutter/widgets.dart';
 
@@ -101,6 +103,20 @@ class WebKitGtkOverlayGeometry {
       '${right.toStringAsFixed(1)},${bottom.toStringAsFixed(1)} '
       'view=${viewWidth.toStringAsFixed(0)}x${viewHeight.toStringAsFixed(0)} '
       'dpr=${devicePixelRatio.toStringAsFixed(2)})';
+}
+
+/// Native `webview_overlay_axis_scale` counterpart. Keep in lockstep with
+/// `linux/src/webview_overlay_coords.cc`.
+double overlayAxisScale({
+  required double flutterLogical,
+  required double viewPx,
+  required double dpr,
+}) {
+  if (flutterLogical <= 1.0 || viewPx <= 0) return dpr;
+  final fromView = viewPx / flutterLogical;
+  final tolerance = math.max(0.08, dpr.abs() * 0.15);
+  if ((fromView - dpr).abs() <= tolerance) return fromView;
+  return dpr;
 }
 
 /// Measures a placeholder [RenderBox] into FlView-local logical pixels.
