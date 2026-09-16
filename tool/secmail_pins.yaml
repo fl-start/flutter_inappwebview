@@ -19,7 +19,7 @@ shared:
     path: flutter_inappwebview_web
 
 linux:
-  ref: refactor/linux-webkitgtk-4.1-only
+  ref: 9f04c8b453d7a50ffdf4de59676742959ea7ac43
   packages:
   - name: flutter_inappwebview_linux_webkitgtk
     path: flutter_inappwebview_linux_webkitgtk
