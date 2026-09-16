@@ -9,6 +9,22 @@
 #include "webview_webkitgtk.h"
 #include "webview_webkitgtk_flutter_settings.h"
 #include "webview_plugin_methods.h"
+#include "webview_native_health.h"
+
+static FlMethodResponse *webview_error_with_reason(const gchar *code,
+                                                   const gchar *message,
+                                                   const gchar *reason)
+{
+  webview_native_health_set_last_error(reason);
+  g_warning("Scomm WebKitGTK %s: %s (%s)", code, message, reason ? reason : "");
+  FlValue *details = fl_value_new_map();
+  webview_native_health_fill_runtime(details);
+  if (reason)
+  {
+    fl_value_set_string_take(details, "reason", fl_value_new_string(reason));
+  }
+  return FL_METHOD_RESPONSE(fl_method_error_response_new(code, message, details));
+}
 
 // Optional StandardCodec map under "settings" (same for create / ensure / open / applySettings).
 static FlValue *webview_plugin_lookup_settings_map(FlValue *args)
@@ -41,6 +57,22 @@ bool webview_plugin_try_handle_lifecycle_method(
     FlMethodResponse **out_response)
 {
   *out_response = nullptr;
+
+  if (g_strcmp0(method, kMethodGetNativeHealth) == 0)
+  {
+    gint64 view_id = -1;
+    if (args && fl_value_get_type(args) == FL_VALUE_TYPE_MAP)
+    {
+      FlValue *view_id_value = fl_value_lookup_string(args, "viewId");
+      if (view_id_value && fl_value_get_type(view_id_value) == FL_VALUE_TYPE_INT)
+      {
+        view_id = fl_value_get_int(view_id_value);
+      }
+    }
+    *out_response = FL_METHOD_RESPONSE(fl_method_success_response_new(
+        webview_native_health_snapshot(overlay_windows, view_id)));
+    return true;
+  }
 
   if (g_strcmp0(method, kMethodCreate) == 0)
   {
@@ -81,9 +113,8 @@ bool webview_plugin_try_handle_lifecycle_method(
     FlView *flutter_view = get_flutter_view(registrar);
     if (!flutter_view)
     {
-      *out_response = FL_METHOD_RESPONSE(fl_method_error_response_new(
-          "UNAVAILABLE", "Flutter view not ready", nullptr));
-
+      *out_response = webview_error_with_reason(
+          "UNAVAILABLE", "Flutter view not ready", "flutter_view_not_ready");
       return true;
     }
 
@@ -94,9 +125,11 @@ bool webview_plugin_try_handle_lifecycle_method(
 
     if (!overlay_window)
     {
-      *out_response = FL_METHOD_RESPONSE(fl_method_error_response_new(
-          "INTERNAL_ERROR", "Failed to create overlay window", nullptr));
-
+      const gchar *reason = webview_native_health_last_error();
+      *out_response = webview_error_with_reason(
+          "INTERNAL_ERROR",
+          "Failed to create overlay window",
+          reason ? reason : "overlay_create_failed");
       return true;
     }
 
@@ -109,7 +142,8 @@ bool webview_plugin_try_handle_lifecycle_method(
           overlay_window->webkit_view, user_scripts);
     }
 
-    *out_response = FL_METHOD_RESPONSE(fl_method_success_response_new(nullptr));
+    *out_response = FL_METHOD_RESPONSE(fl_method_success_response_new(
+        webview_native_health_from_overlay(overlay_window)));
 
     return true;
   }
@@ -157,9 +191,8 @@ bool webview_plugin_try_handle_lifecycle_method(
     FlView *flutter_view = get_flutter_view(registrar);
     if (!flutter_view)
     {
-      *out_response = FL_METHOD_RESPONSE(fl_method_error_response_new(
-          "UNAVAILABLE", "Flutter view not ready", nullptr));
-
+      *out_response = webview_error_with_reason(
+          "UNAVAILABLE", "Flutter view not ready", "flutter_view_not_ready");
       return true;
     }
 
@@ -170,14 +203,17 @@ bool webview_plugin_try_handle_lifecycle_method(
 
     if (!overlay_window)
     {
-      *out_response = FL_METHOD_RESPONSE(fl_method_error_response_new(
-          "INTERNAL_ERROR", "Failed to create overlay window", nullptr));
-
+      const gchar *reason = webview_native_health_last_error();
+      *out_response = webview_error_with_reason(
+          "INTERNAL_ERROR",
+          "Failed to create overlay window",
+          reason ? reason : "overlay_create_failed");
       return true;
     }
 
     g_hash_table_insert(overlay_windows, view_id_key, overlay_window);
-    *out_response = FL_METHOD_RESPONSE(fl_method_success_response_new(nullptr));
+    *out_response = FL_METHOD_RESPONSE(fl_method_success_response_new(
+        webview_native_health_from_overlay(overlay_window)));
 
     return true;
   }

@@ -24,6 +24,8 @@ void main() {
 
   tearDown(() {
     messenger.setMockMethodCallHandler(channel, null);
+    WebKitGtkOverlayHooks.lastNativeHealth = null;
+    WebKitGtkOverlayHooks.onNativeHealth = null;
   });
 
   testWidgets('initial settings are forwarded during native creation', (

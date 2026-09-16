@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 
 import 'webkitgtk_channel_dispatcher.dart';
 import 'webkitgtk_geometry.dart';
+import 'webkitgtk_native_health.dart';
 
 /// Optional host-app hooks for GtkOverlay geometry and modal occlusion.
 ///
@@ -149,5 +150,26 @@ class WebKitGtkOverlayHooks {
       'setBounds',
       geometry.toMethodChannelArgs(),
     );
+  }
+
+  /// Latest native create/load snapshot (Linux WebKitGTK).
+  static WebKitGtkNativeHealth? lastNativeHealth;
+
+  /// Called whenever native create/getNativeHealth reports a snapshot.
+  static void Function(WebKitGtkNativeHealth health)? onNativeHealth;
+
+  static void reportNativeHealth(WebKitGtkNativeHealth health) {
+    lastNativeHealth = health;
+    onNativeHealth?.call(health);
+  }
+
+  static Future<WebKitGtkNativeHealth?> queryNativeHealth({int? viewId}) async {
+    final raw = await WebKitGtkChannelDispatcher.channel.invokeMethod(
+      'getNativeHealth',
+      {if (viewId != null) 'viewId': viewId},
+    );
+    final health = WebKitGtkNativeHealth.fromChannel(raw);
+    reportNativeHealth(health);
+    return health;
   }
 }

@@ -10,6 +10,7 @@ import 'webkitgtk_channel_dispatcher.dart';
 import 'webkitgtk_custom_scheme.dart';
 import 'webkitgtk_geometry.dart';
 import 'webkitgtk_keep_alive_pool.dart';
+import 'webkitgtk_native_health.dart';
 import 'webkitgtk_overlay_hooks.dart';
 import 'webview_controller_webkitgtk.dart';
 
@@ -390,14 +391,20 @@ class _WebKitGtkOverlayWidgetState extends State<WebKitGtkOverlayWidget>
         return;
       }
 
-      await WebKitGtkChannelDispatcher.channel.invokeMethod('create', {
-        'viewId': _viewId,
-        if (widget.initialSettings != null) 'settings': widget.initialSettings,
-        if (widget.initialUserScripts != null)
-          'userScripts': widget.initialUserScripts!
-              .map((script) => script.toMap())
-              .toList(),
-      });
+      final result = await WebKitGtkChannelDispatcher.channel.invokeMethod(
+        'create',
+        {
+          'viewId': _viewId,
+          if (widget.initialSettings != null) 'settings': widget.initialSettings,
+          if (widget.initialUserScripts != null)
+            'userScripts': widget.initialUserScripts!
+                .map((script) => script.toMap())
+                .toList(),
+        },
+      );
+      WebKitGtkOverlayHooks.reportNativeHealth(
+        WebKitGtkNativeHealth.fromChannel(result),
+      );
 
       _controller = WebViewControllerWebKitGTK(_viewId);
       widget.onWebViewCreated(_controller!);
@@ -420,9 +427,42 @@ class _WebKitGtkOverlayWidgetState extends State<WebKitGtkOverlayWidget>
       setState(() => _isInitialized = true);
       _scheduleNativeBoundsSync(frames: 2);
     } catch (e) {
-      setState(() => _loadError = e.toString());
-      widget.onLoadError('', -1, 'Failed to initialize WebView: $e');
+      final health = _healthFromCreateError(e);
+      WebKitGtkOverlayHooks.reportNativeHealth(health);
+      setState(() => _loadError = health.toDiagnosticText());
+      widget.onLoadError('', -1, 'Failed to initialize WebView: ${health.reason ?? e}');
     }
+  }
+
+  WebKitGtkNativeHealth _healthFromCreateError(Object error) {
+    if (error is PlatformException) {
+      return WebKitGtkNativeHealth.fromChannel({
+        ...?_asStringKeyedMap(error.details),
+        'loaded': false,
+        'reason': error.details is Map
+            ? (_asStringKeyedMap(error.details)?['reason'] ?? error.code)
+            : error.code,
+        'lastError': error.message,
+      });
+    }
+    return WebKitGtkNativeHealth(
+      loaded: false,
+      embedding: 'none',
+      gdkBackend: 'unknown',
+      webkitVersion: '',
+      gtkVersion: '',
+      soupMajor: '',
+      webkitApi: 'webkit2gtk-4.1',
+      viewId: _viewId,
+      reason: error.toString(),
+    );
+  }
+
+  Map<String, Object?>? _asStringKeyedMap(Object? raw) {
+    if (raw is! Map) return null;
+    return {
+      for (final entry in raw.entries) '${entry.key}': entry.value,
+    };
   }
 
   Future<void> _disposeWebView() async {
@@ -452,8 +492,22 @@ class _WebKitGtkOverlayWidgetState extends State<WebKitGtkOverlayWidget>
       await WebKitGtkChannelDispatcher.channel.invokeMethod(visible ? 'show' : 'hide', {
         'viewId': _viewId,
       });
-    } catch (_) {
-      // Best effort visibility sync.
+    } catch (e) {
+      final previous = WebKitGtkOverlayHooks.lastNativeHealth;
+      WebKitGtkOverlayHooks.reportNativeHealth(
+        WebKitGtkNativeHealth(
+          loaded: previous?.loaded ?? true,
+          embedding: previous?.embedding ?? 'unknown',
+          gdkBackend: previous?.gdkBackend ?? 'unknown',
+          webkitVersion: previous?.webkitVersion ?? '',
+          gtkVersion: previous?.gtkVersion ?? '',
+          soupMajor: previous?.soupMajor ?? '',
+          webkitApi: previous?.webkitApi ?? 'webkit2gtk-4.1',
+          viewId: _viewId,
+          warning: 'visibility_sync_failed',
+          lastError: e.toString(),
+        ),
+      );
     }
   }
 

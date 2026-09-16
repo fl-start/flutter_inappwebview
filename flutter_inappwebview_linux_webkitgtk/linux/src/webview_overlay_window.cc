@@ -1,5 +1,6 @@
 #include "webview_overlay_window.h"
 #include "webview_webkitgtk.h"
+#include "webview_native_health.h"
 #include <flutter_linux/flutter_linux.h>
 #include <gtk/gtk.h>
 #include <gdk/gdk.h>
@@ -38,6 +39,15 @@ static GtkWidget *find_gtk_overlay_ancestor(GtkWidget *widget)
     if (GTK_IS_OVERLAY(w))
       return w;
   }
+  return nullptr;
+}
+
+static WebViewOverlayWindow *fail_overlay_new(WebViewOverlayWindow *instance,
+                                              const gchar *reason)
+{
+  webview_native_health_set_last_error(reason);
+  g_warning("Scomm WebKitGTK overlay create failed: %s", reason);
+  g_free(instance);
   return nullptr;
 }
 
@@ -621,27 +631,21 @@ WebViewOverlayWindow *webview_overlay_window_new(
 
   if (!flutter_view)
   {
-    g_print("⚠️ Flutter view is null, cannot create overlay window\n");
-    g_free(instance);
-    return nullptr;
+    return fail_overlay_new(instance, "flutter_view_null");
   }
 
   // Get the FlView's widget
   GtkWidget *flutter_widget = GTK_WIDGET(flutter_view);
   if (!flutter_widget)
   {
-    g_print("⚠️ Flutter widget is null\n");
-    g_free(instance);
-    return nullptr;
+    return fail_overlay_new(instance, "flutter_widget_null");
   }
 
   // Get the parent window
   GtkWidget *toplevel = gtk_widget_get_toplevel(flutter_widget);
   if (!toplevel || !GTK_IS_WINDOW(toplevel))
   {
-    g_print("⚠️ Cannot get toplevel window\n");
-    g_free(instance);
-    return nullptr;
+    return fail_overlay_new(instance, "toplevel_window_missing");
   }
   instance->parent_window = GTK_WINDOW(toplevel);
 
@@ -682,6 +686,7 @@ WebViewOverlayWindow *webview_overlay_window_new(
     instance->host_layout_overlay_handler_id = g_signal_connect(
         instance->embedding_overlay, "size-allocate",
         G_CALLBACK(on_host_size_allocate), instance);
+    webview_native_health_set_last_error(nullptr);
   }
 
   // Create window based on mode (fallback popup path)
@@ -728,6 +733,13 @@ WebViewOverlayWindow *webview_overlay_window_new(
     gtk_window_set_transient_for(instance->window, instance->parent_window);
     gtk_window_set_modal(instance->window, FALSE); // Explicitly non-modal
     gtk_window_set_type_hint(instance->window, GDK_WINDOW_TYPE_HINT_UTILITY);
+    webview_native_health_set_last_error(
+        "missing_gtk_overlay_ancestor_popup_fallback");
+    g_warning(
+        "Scomm WebKitGTK: no GtkOverlay ancestor for FlView; using a popup "
+        "window. The mailbox WebView may appear blank or misaligned "
+        "(view_id=%ld).",
+        (long)view_id);
   }
 
   // Connect to parent window configure for popup windows always, and for
@@ -769,6 +781,15 @@ WebViewOverlayWindow *webview_overlay_window_new(
   {
     gtk_box_pack_start(GTK_BOX(instance->container), web_view_widget, TRUE, TRUE, 0);
   }
+  else
+  {
+    webview_native_health_set_last_error("webkit_widget_missing");
+    g_warning(
+        "Scomm WebKitGTK: WebKitWebView widget was not created (view_id=%ld).",
+        (long)view_id);
+    webview_overlay_window_destroy(instance);
+    return nullptr;
+  }
 
   // Connect delete event (popup path only)
   if (!instance->embedded_widget_mode &&
@@ -805,6 +826,25 @@ WebViewOverlayWindow *webview_overlay_window_new(
   else
   {
     g_print("🐧 Overlay window created (embedded mode, view_id: %ld)\n", view_id);
+  }
+
+  {
+    g_autoptr(FlValue) health = webview_native_health_from_overlay(instance);
+    FlValue *emb = fl_value_lookup_string(health, "embedding");
+    FlValue *gdk = fl_value_lookup_string(health, "gdkBackend");
+    FlValue *ver = fl_value_lookup_string(health, "webkitVersion");
+    g_message(
+        "Scomm WebKitGTK ready: view_id=%ld embedding=%s gdk=%s webkit=%s",
+        (long)view_id,
+        emb && fl_value_get_type(emb) == FL_VALUE_TYPE_STRING
+            ? fl_value_get_string(emb)
+            : "?",
+        gdk && fl_value_get_type(gdk) == FL_VALUE_TYPE_STRING
+            ? fl_value_get_string(gdk)
+            : "?",
+        ver && fl_value_get_type(ver) == FL_VALUE_TYPE_STRING
+            ? fl_value_get_string(ver)
+            : "?");
   }
 
   return instance;

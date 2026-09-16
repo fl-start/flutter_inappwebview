@@ -52,6 +52,7 @@ set(PLUGIN_SOURCES
   "${CMAKE_CURRENT_SOURCE_DIR}/src/webview_webkitgtk_flutter_settings.cc"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/webview_webkitgtk.cc"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/webview_overlay_window.cc"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/webview_native_health.cc"
 )
 
 add_library(${PLUGIN_NAME} SHARED ${PLUGIN_SOURCES})
