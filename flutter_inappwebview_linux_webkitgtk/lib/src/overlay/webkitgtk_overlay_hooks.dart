@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 
 import 'webkitgtk_channel_dispatcher.dart';
 import 'webkitgtk_geometry.dart';
+import 'webkitgtk_geometry_coordinator.dart';
 import 'webkitgtk_native_health.dart';
 
 /// Optional host-app hooks for GtkOverlay geometry and modal occlusion.
@@ -43,6 +44,7 @@ class WebKitGtkOverlayHooks {
   static void setExclusiveShellViewId(int? viewId) {
     if (exclusiveShellViewId.value == viewId) return;
     exclusiveShellViewId.value = viewId;
+    WebKitGtkGeometryCoordinator.instance.schedule();
   }
 
   static void setRightInset(double value) {
@@ -54,6 +56,7 @@ class WebKitGtkOverlayHooks {
   static void notifyLayoutChanged() {
     forceImmediateBoundsSync = true;
     layoutEpoch.value++;
+    WebKitGtkGeometryCoordinator.instance.schedule();
   }
 
   /// Optional host callback when native [setBounds] is invoked (debug alignment).
@@ -64,6 +67,17 @@ class WebKitGtkOverlayHooks {
     required double height,
   })?
   onNativeBoundsSent;
+
+  /// Optional host callback when native acknowledges a `setBounds`.
+  static void Function({
+    required bool applied,
+    required int sequence,
+    required double x,
+    required double y,
+    required double width,
+    required double height,
+  })?
+  onNativeBoundsAck;
 
   /// Optional per-view host bounds in **FlView-local logical** pixels.
   ///
@@ -86,27 +100,27 @@ class WebKitGtkOverlayHooks {
 
   static void registerSyncHandler(VoidCallback handler) {
     _syncHandlers.add(handler);
+    WebKitGtkGeometryCoordinator.instance.register(handler);
   }
 
   static void unregisterSyncHandler(VoidCallback handler) {
     _syncHandlers.remove(handler);
+    WebKitGtkGeometryCoordinator.instance.unregister(handler);
   }
 
-  /// Ask every mounted overlay to push setBounds now (maximize / pane resize).
+  /// Ask every mounted overlay to push setBounds on the next frame.
   ///
   /// Each overlay measures **its own** placeholder (or host provider for its
   /// viewId). Handlers must not clobber [activeEmbeddedViewId].
   static void forceSyncAll() {
     forceImmediateBoundsSync = true;
     layoutEpoch.value++;
-    for (final handler in _syncHandlers.toList(growable: false)) {
-      handler();
-    }
+    WebKitGtkGeometryCoordinator.instance.schedule();
   }
 
   /// Last-resort host push when Flutter slot and native bounds diverge.
   ///
-  /// Bypasses overlay early-returns that previously left maximize stuck.
+  /// Uses the shared monotonic sequence — never a wall-clock timestamp.
   /// [x]/[y]/[width]/[height] must be FlView-local logical pixels.
   static Future<void> pushSetBounds({
     required double x,
@@ -118,6 +132,7 @@ class WebKitGtkOverlayHooks {
     required double devicePixelRatio,
     int? viewId,
     int? sequence,
+    int? generation,
     bool visible = true,
   }) async {
     final id = viewId ?? activeEmbeddedViewId;
@@ -126,7 +141,8 @@ class WebKitGtkOverlayHooks {
 
     final geometry = WebKitGtkOverlayGeometry(
       viewId: id,
-      sequence: sequence ?? DateTime.now().microsecondsSinceEpoch,
+      sequence: sequence ?? WebKitGtkGeometrySequence.next(),
+      generation: generation ?? WebKitGtkGeometrySequence.generation,
       visible: visible,
       left: x,
       top: y,
@@ -146,9 +162,43 @@ class WebKitGtkOverlayHooks {
     forceImmediateBoundsSync = true;
     layoutEpoch.value++;
 
-    await WebKitGtkChannelDispatcher.channel.invokeMethod(
+    final raw = await WebKitGtkChannelDispatcher.channel.invokeMethod(
       'setBounds',
       geometry.toMethodChannelArgs(),
+    );
+    _reportAck(raw, fallback: geometry);
+  }
+
+  static void _reportAck(Object? raw, {required WebKitGtkOverlayGeometry fallback}) {
+    var applied = true;
+    var seq = fallback.sequence;
+    var x = fallback.left;
+    var y = fallback.top;
+    var w = fallback.width;
+    var h = fallback.height;
+    if (raw is Map) {
+      applied = raw['applied'] != false;
+      final rawSeq = raw['seq'];
+      if (rawSeq is num) seq = rawSeq.toInt();
+      final rawX = raw['x'];
+      final rawY = raw['y'];
+      final rawW = raw['width'];
+      final rawH = raw['height'];
+      if (rawX is num) x = rawX.toDouble();
+      if (rawY is num) y = rawY.toDouble();
+      if (rawW is num) w = rawW.toDouble();
+      if (rawH is num) h = rawH.toDouble();
+    }
+    if (applied) {
+      onNativeBoundsSent?.call(x: x, y: y, width: w, height: h);
+    }
+    onNativeBoundsAck?.call(
+      applied: applied,
+      sequence: seq,
+      x: x,
+      y: y,
+      width: w,
+      height: h,
     );
   }
 

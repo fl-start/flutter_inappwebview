@@ -1,6 +1,11 @@
 #include "webview_overlay_embedded.h"
 
+#include "webview_overlay_coords.h"
 #include "webview_overlay_debug.h"
+
+// Trailing debounce for onHostLayoutChanged. Long enough to coalesce a
+// size-allocate burst, short enough that maximize settles within a few frames.
+static constexpr guint kHostLayoutNotifyDebounceMs = 48;
 
 void webview_overlay_clear_source(guint *id)
 {
@@ -20,6 +25,7 @@ void webview_overlay_cancel_idle_sources(WebViewOverlayWindow *instance)
   webview_overlay_clear_source(&instance->timeout_force_bounds_120_source_id);
   webview_overlay_clear_source(&instance->idle_raise_source_id);
   webview_overlay_clear_source(&instance->timeout_raise_32_source_id);
+  webview_overlay_clear_source(&instance->host_layout_notify_source_id);
 }
 
 GtkWidget *webview_overlay_find_gtk_overlay_ancestor(GtkWidget *widget)
@@ -107,13 +113,9 @@ static void force_overlay_child_gdk_window_bounds(WebViewOverlayWindow *instance
   const gint win_w = MAX(1, instance->last_overlay_alloc_width);
   const gint win_h = MAX(1, instance->last_overlay_alloc_height);
 
-  // Trust GtkOverlay "get-child-position". last_overlay_alloc_* are overlay-relative
-  // and must match the Flutter placeholder after convert_flutter_bounds_to_overlay.
-  //
-  // Do NOT gdk_window_move_resize into gtk_widget_translate_coordinates()
-  // (toplevel) space: that fights Gtk (terminal proof:
-  //   get-child-position -> (678,352)
-  //   Forced was(678,399) -> (704,422)   // wrongly shifted off the placeholder).
+  // Trust GtkOverlay "get-child-position". last_overlay_alloc_* are
+  // overlay-relative. Do NOT gdk_window_move_resize into toplevel space: that
+  // fights GTK and shifts the WebView off the placeholder.
   if (instance->child_position_handler_id != 0)
   {
     gtk_widget_set_size_request(instance->container, win_w, win_h);
@@ -208,6 +210,28 @@ void webview_overlay_schedule_raise(WebViewOverlayWindow *instance)
       g_timeout_add(32, timeout_raise_embedded_overlay_child, instance);
 }
 
+void webview_overlay_sync_embedded_visibility(WebViewOverlayWindow *instance)
+{
+  if (!instance || !instance->embedded_widget_mode || !instance->container)
+    return;
+
+  // Showing before the first setBounds would let GtkOverlay place the child
+  // at its default (0,0) natural size — a flash over the inbox.
+  const gboolean should_show = instance->wants_visible &&
+                               instance->has_applied_overlay_bounds &&
+                               !instance->hidden_by_host_clip;
+  const gboolean shown = gtk_widget_get_visible(instance->container);
+  if (should_show && !shown)
+  {
+    gtk_widget_show_all(instance->container);
+    webview_overlay_schedule_raise(instance);
+  }
+  else if (!should_show && shown)
+  {
+    gtk_widget_hide(instance->container);
+  }
+}
+
 void webview_overlay_apply_embedded_bounds(
     WebViewOverlayWindow *instance,
     gint x,
@@ -223,6 +247,7 @@ void webview_overlay_apply_embedded_bounds(
   gint bounded_y = y;
   gint bounded_width = MAX(1, width);
   gint bounded_height = MAX(1, height);
+  gboolean inside_host = TRUE;
 
   GtkWidget *host = instance->embedding_overlay;
   if (host && gtk_widget_get_realized(host))
@@ -231,26 +256,12 @@ void webview_overlay_apply_embedded_bounds(
     const gint host_h = gtk_widget_get_allocated_height(host);
     if (host_w > 0 && host_h > 0)
     {
-      if (bounded_x < 0)
-        bounded_x = 0;
-      if (bounded_y < 0)
-        bounded_y = 0;
-      if (bounded_x > host_w - 1)
-        bounded_x = host_w - 1;
-      if (bounded_y > host_h - 1)
-        bounded_y = host_h - 1;
-
-      const gboolean request_fits_host =
-          bounded_width <= host_w && bounded_height <= host_h;
-      if (request_fits_host)
-      {
-        if (bounded_x + bounded_width > host_w)
-          bounded_width = MAX(1, host_w - bounded_x);
-        if (bounded_y + bounded_height > host_h)
-          bounded_height = MAX(1, host_h - bounded_y);
-      }
+      inside_host = webview_overlay_intersect_host(
+          x, y, bounded_width, bounded_height, host_w, host_h,
+          &bounded_x, &bounded_y, &bounded_width, &bounded_height);
     }
   }
+  instance->hidden_by_host_clip = !inside_host;
 
   const gboolean unchanged =
       instance->has_applied_overlay_bounds &&
@@ -267,6 +278,7 @@ void webview_overlay_apply_embedded_bounds(
 
   if (unchanged)
   {
+    webview_overlay_sync_embedded_visibility(instance);
     force_overlay_child_gdk_window_bounds(instance);
     return;
   }
@@ -303,23 +315,28 @@ void webview_overlay_apply_embedded_bounds(
     gtk_widget_set_clip(instance->container, &clip);
   }
 
-  if (instance->embedding_overlay && GTK_IS_WIDGET(instance->embedding_overlay))
-    gtk_widget_queue_resize(GTK_WIDGET(instance->embedding_overlay));
+  if (host && GTK_IS_WIDGET(host))
+    gtk_widget_queue_resize(host);
   else
     gtk_widget_queue_resize(instance->container);
 
+  webview_overlay_sync_embedded_visibility(instance);
   force_overlay_child_gdk_window_bounds(instance);
   schedule_force_overlay_child_bounds(instance);
 
-  coord_print("🐧 %s: %dx%d @ embedded(%d,%d) (view_id: %ld)\n",
+  coord_print("🐧 %s: %dx%d @ embedded(%d,%d) inside_host=%d (view_id: %ld)\n",
               log_prefix, bounded_width, bounded_height, bounded_x, bounded_y,
-              instance->view_id);
+              inside_host, instance->view_id);
 }
 
-void webview_overlay_emit_host_layout_changed(WebViewOverlayWindow *instance)
+static gboolean host_layout_notify_cb(gpointer user_data)
 {
-  if (!instance || !instance->method_channel || !instance->embedded_widget_mode)
-    return;
+  WebViewOverlayWindow *instance = static_cast<WebViewOverlayWindow *>(user_data);
+  if (!instance)
+    return G_SOURCE_REMOVE;
+  instance->host_layout_notify_source_id = 0;
+  if (!instance->method_channel || !instance->embedded_widget_mode)
+    return G_SOURCE_REMOVE;
 
   g_autoptr(FlValue) map = fl_value_new_map();
   fl_value_set_string_take(
@@ -331,6 +348,47 @@ void webview_overlay_emit_host_layout_changed(WebViewOverlayWindow *instance)
       nullptr,
       nullptr,
       nullptr);
+  return G_SOURCE_REMOVE;
+}
+
+void webview_overlay_schedule_host_layout_changed(WebViewOverlayWindow *instance)
+{
+  if (!instance || !instance->method_channel || !instance->embedded_widget_mode)
+    return;
+  webview_overlay_clear_source(&instance->host_layout_notify_source_id);
+  instance->host_layout_notify_source_id =
+      g_timeout_add(kHostLayoutNotifyDebounceMs, host_layout_notify_cb, instance);
+}
+
+// FlView, GtkOverlay and toplevel size-allocate all land here. Dedupe on the
+// two allocations that define overlay geometry; the toplevel allocation
+// includes CSD chrome and would never compare equal to either.
+static void note_host_layout(WebViewOverlayWindow *instance)
+{
+  if (!instance || !instance->embedded_widget_mode)
+    return;
+
+  GtkWidget *flview =
+      instance->flutter_view ? GTK_WIDGET(instance->flutter_view) : nullptr;
+  GtkWidget *overlay = instance->embedding_overlay;
+  const gint fw = flview ? gtk_widget_get_allocated_width(flview) : 0;
+  const gint fh = flview ? gtk_widget_get_allocated_height(flview) : 0;
+  const gint ow = overlay ? gtk_widget_get_allocated_width(overlay) : 0;
+  const gint oh = overlay ? gtk_widget_get_allocated_height(overlay) : 0;
+
+  if (instance->has_reported_host_layout &&
+      instance->last_reported_flview_width == fw &&
+      instance->last_reported_flview_height == fh &&
+      instance->last_reported_overlay_width == ow &&
+      instance->last_reported_overlay_height == oh)
+    return;
+
+  instance->has_reported_host_layout = TRUE;
+  instance->last_reported_flview_width = fw;
+  instance->last_reported_flview_height = fh;
+  instance->last_reported_overlay_width = ow;
+  instance->last_reported_overlay_height = oh;
+  webview_overlay_schedule_host_layout_changed(instance);
 }
 
 void webview_overlay_on_host_size_allocate(GtkWidget *widget,
@@ -338,21 +396,8 @@ void webview_overlay_on_host_size_allocate(GtkWidget *widget,
                                            gpointer user_data)
 {
   (void)widget;
-  WebViewOverlayWindow *instance = static_cast<WebViewOverlayWindow *>(user_data);
-  if (!instance || !allocation)
-    return;
-
-  if (instance->has_reported_host_alloc &&
-      instance->last_reported_host_alloc_width == allocation->width &&
-      instance->last_reported_host_alloc_height == allocation->height)
-  {
-    return;
-  }
-  instance->has_reported_host_alloc = TRUE;
-  instance->last_reported_host_alloc_width = allocation->width;
-  instance->last_reported_host_alloc_height = allocation->height;
-
-  webview_overlay_emit_host_layout_changed(instance);
+  (void)allocation;
+  note_host_layout(static_cast<WebViewOverlayWindow *>(user_data));
 }
 
 gboolean webview_overlay_on_get_child_position(GtkOverlay *overlay,
@@ -391,33 +436,10 @@ gboolean webview_overlay_on_parent_configure_event(GtkWidget *widget,
                                                    GdkEventConfigure *event,
                                                    gpointer user_data)
 {
-  WebViewOverlayWindow *instance = static_cast<WebViewOverlayWindow *>(user_data);
   (void)widget;
-  if (!instance)
-    return FALSE;
-
-  if (instance->embedded_widget_mode)
-  {
-    const gboolean unchanged = event &&
-        instance->has_reported_parent_configure &&
-        instance->last_reported_parent_configure_width == event->width &&
-        instance->last_reported_parent_configure_height == event->height;
-    if (event)
-    {
-      instance->has_reported_parent_configure = TRUE;
-      instance->last_reported_parent_configure_width = event->width;
-      instance->last_reported_parent_configure_height = event->height;
-    }
-    if (!unchanged)
-      webview_overlay_emit_host_layout_changed(instance);
-    return FALSE;
-  }
-
-  if (!instance->window)
-    return FALSE;
-
-  if (!gtk_widget_get_visible(GTK_WIDGET(instance->window)))
-    return FALSE;
-
+  (void)event;
+  WebViewOverlayWindow *instance = static_cast<WebViewOverlayWindow *>(user_data);
+  if (instance && instance->embedded_widget_mode)
+    note_host_layout(instance);
   return FALSE;
 }

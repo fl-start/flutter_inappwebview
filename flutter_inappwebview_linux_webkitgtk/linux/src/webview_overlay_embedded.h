@@ -27,7 +27,12 @@ void webview_overlay_apply_embedded_bounds(
     gint height,
     const gchar *log_prefix);
 
-void webview_overlay_emit_host_layout_changed(WebViewOverlayWindow *instance);
+// Trailing-edge (per instance) onHostLayoutChanged so the final allocation of
+// a maximize / drag-resize is always reported.
+void webview_overlay_schedule_host_layout_changed(WebViewOverlayWindow *instance);
+
+// Show the embedded container when Dart wants it visible and bounds allow it.
+void webview_overlay_sync_embedded_visibility(WebViewOverlayWindow *instance);
 
 void webview_overlay_on_host_size_allocate(GtkWidget *widget,
                                            GtkAllocation *allocation,

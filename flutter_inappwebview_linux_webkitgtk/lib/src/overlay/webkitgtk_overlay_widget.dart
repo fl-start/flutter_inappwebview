@@ -87,21 +87,18 @@ class _WebKitGtkOverlayWidgetState extends State<WebKitGtkOverlayWidget>
     WidgetsBinding.instance.addObserver(this);
     _viewId = WebKitGtkKeepAlivePool.viewIdFor(widget.keepAlive?.id) ??
         _nextViewId++;
+    claimOverlayGeneration();
     wkzTrace(_viewId, 'initState');
     WebKitGtkChannelDispatcher.registerView(_viewId, _handleMethodCall);
     _initializeWebView();
     _overlayGeometryListener = () {
       lastSentGeometry = null;
+      lastAckedGeometry = null;
       pendingMeasurementSize = null;
       pendingMeasurementOrigin = null;
       stableMeasurementFrames = 0;
       WebKitGtkOverlayHooks.forceImmediateBoundsSync = true;
-      scheduleNativeBoundsSync(frames: 5);
-      unawaited(
-        Future<void>.delayed(const Duration(milliseconds: 600), () {
-          WebKitGtkOverlayHooks.forceImmediateBoundsSync = false;
-        }),
-      );
+      scheduleNativeBoundsSync();
     };
     WebKitGtkOverlayHooks.layoutEpoch.addListener(_overlayGeometryListener!);
     _forceSyncHandler = () {
@@ -197,6 +194,7 @@ class _WebKitGtkOverlayWidgetState extends State<WebKitGtkOverlayWidget>
       // setBounds cannot reuse warm-create / wrong-X coords over the inbox.
       if (shouldBeVisible) {
         lastSentGeometry = null;
+        lastAckedGeometry = null;
         pendingMeasurementSize = null;
         pendingMeasurementOrigin = null;
         stableMeasurementFrames = 0;
@@ -204,7 +202,7 @@ class _WebKitGtkOverlayWidgetState extends State<WebKitGtkOverlayWidget>
       }
     }
     if (shouldBeVisible) {
-      scheduleNativeBoundsSync(frames: 5);
+      scheduleNativeBoundsSync();
     }
   }
 
@@ -231,7 +229,7 @@ class _WebKitGtkOverlayWidgetState extends State<WebKitGtkOverlayWidget>
       );
       _modalScopeListener = null;
     }
-    pendingGeometry = null;
+    disposeBoundsSync();
     overlayNativeVisible = false;
     setNativeVisibility(false);
     _disposeWebView();
@@ -258,12 +256,7 @@ class _WebKitGtkOverlayWidgetState extends State<WebKitGtkOverlayWidget>
   void didChangeMetrics() {
     resetBoundsMeasurement(forceImmediate: true);
     _reevaluateVisibility();
-    scheduleNativeBoundsSync(frames: 1);
-    unawaited(
-      Future<void>.delayed(const Duration(milliseconds: 800), () {
-        WebKitGtkOverlayHooks.forceImmediateBoundsSync = false;
-      }),
-    );
+    scheduleNativeBoundsSync();
   }
 
   Future<dynamic> _handleMethodCall(MethodCall call) async {
@@ -299,15 +292,10 @@ class _WebKitGtkOverlayWidgetState extends State<WebKitGtkOverlayWidget>
         return widget.onMessage(name, payload);
       case 'onHostLayoutChanged':
         lastSentGeometry = null;
+        lastAckedGeometry = null;
         WebKitGtkOverlayHooks.forceImmediateBoundsSync = true;
         _reevaluateVisibility();
-        syncNativeWindowPosition(bypassDebounce: true);
-        scheduleNativeBoundsSync(frames: 4);
-        unawaited(
-          Future<void>.delayed(const Duration(milliseconds: 500), () {
-            WebKitGtkOverlayHooks.forceImmediateBoundsSync = false;
-          }),
-        );
+        scheduleNativeBoundsSync();
         break;
       default:
         throw MissingPluginException();
@@ -323,7 +311,7 @@ class _WebKitGtkOverlayWidgetState extends State<WebKitGtkOverlayWidget>
         widget.onWebViewCreated(_controller!);
         await WebKitGtkChannelDispatcher.channel.invokeMethod('show', {'viewId': _viewId});
         setState(() => _isInitialized = true);
-        scheduleNativeBoundsSync(frames: 2);
+        scheduleNativeBoundsSync();
         return;
       }
 
@@ -361,7 +349,7 @@ class _WebKitGtkOverlayWidgetState extends State<WebKitGtkOverlayWidget>
       }
 
       setState(() => _isInitialized = true);
-      scheduleNativeBoundsSync(frames: 2);
+      scheduleNativeBoundsSync();
     } catch (e) {
       final health = _healthFromCreateError(e);
       WebKitGtkOverlayHooks.reportNativeHealth(health);
@@ -421,8 +409,7 @@ class _WebKitGtkOverlayWidgetState extends State<WebKitGtkOverlayWidget>
     if (!_isInitialized) return;
     if (_controller == null) return;
     if (!visible) {
-      // Drop any queued bounds so the debounced send can't re-show us.
-      pendingGeometry = null;
+      lastSentGeometry = null;
     }
     wkzTrace(_viewId, 'native ${visible ? "SHOW" : "HIDE"}');
     try {
@@ -527,7 +514,8 @@ class _WebKitGtkOverlayWidgetState extends State<WebKitGtkOverlayWidget>
             lastLayoutConstraints != nextConstraints) {
           lastLayoutConstraints = nextConstraints;
           lastSentGeometry = null;
-          scheduleNativeBoundsSync(frames: 5);
+          lastAckedGeometry = null;
+          scheduleNativeBoundsSync();
         }
 
         // After layout: catch sidebar/Sentria moves where constraints are

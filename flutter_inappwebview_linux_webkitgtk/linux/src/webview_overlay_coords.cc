@@ -5,17 +5,19 @@
 #include <gtk/gtk.h>
 #include <math.h>
 
-gdouble webview_overlay_axis_scale(gdouble flutter_logical,
-                                   gint view_px,
-                                   gdouble dpr)
+gboolean webview_overlay_view_size_is_stale(gdouble flutter_view_w,
+                                            gdouble flutter_view_h,
+                                            gint flview_alloc_w,
+                                            gint flview_alloc_h)
 {
-  if (flutter_logical <= 1.0 || view_px <= 0)
-    return dpr;
-  const gdouble from_view = (gdouble)view_px / flutter_logical;
-  const gdouble tolerance = MAX(0.08, fabs(dpr) * 0.15);
-  if (fabs(from_view - dpr) <= tolerance)
-    return from_view;
-  return dpr;
+  if (flutter_view_w <= 1.0 || flutter_view_h <= 1.0)
+    return FALSE;
+  if (flview_alloc_w <= 0 || flview_alloc_h <= 0)
+    return FALSE;
+  return fabs(flutter_view_w - (gdouble)flview_alloc_w) >
+             WEBVIEW_OVERLAY_STALE_VIEW_EPSILON ||
+         fabs(flutter_view_h - (gdouble)flview_alloc_h) >
+             WEBVIEW_OVERLAY_STALE_VIEW_EPSILON;
 }
 
 void webview_overlay_convert_flutter_bounds(
@@ -26,16 +28,15 @@ void webview_overlay_convert_flutter_bounds(
     gdouble flutter_h,
     gdouble flutter_view_w,
     gdouble flutter_view_h,
-    gdouble device_pixel_ratio,
     gint *out_x,
     gint *out_y,
     gint *out_w,
-    gint *out_h)
+    gint *out_h,
+    gboolean *out_stale)
 {
-  gint overlay_x = (gint)lround(flutter_x);
-  gint overlay_y = (gint)lround(flutter_y);
-  gint overlay_w = (gint)lround(flutter_w);
-  gint overlay_h = (gint)lround(flutter_h);
+  gint origin_x = 0;
+  gint origin_y = 0;
+  gboolean stale = FALSE;
 
   GtkWidget *flutter_widget =
       instance && instance->flutter_view ? GTK_WIDGET(instance->flutter_view)
@@ -46,67 +47,68 @@ void webview_overlay_convert_flutter_bounds(
       gtk_widget_get_realized(flutter_widget) &&
       gtk_widget_get_realized(host))
   {
-    const gint view_px_w = gtk_widget_get_allocated_width(flutter_widget);
-    const gint view_px_h = gtk_widget_get_allocated_height(flutter_widget);
-
-    const gdouble dpr =
-        device_pixel_ratio > 0.01 ? device_pixel_ratio : 1.0;
-    const gdouble scale_x = webview_overlay_axis_scale(flutter_view_w, view_px_w, dpr);
-    const gdouble scale_y = webview_overlay_axis_scale(flutter_view_h, view_px_h, dpr);
-
-    gint origin_x = 0;
-    gint origin_y = 0;
     if (!gtk_widget_translate_coordinates(
             flutter_widget, host, 0, 0, &origin_x, &origin_y))
     {
       origin_x = 0;
       origin_y = 0;
     }
-
-    {
-      const gdouble left = (gdouble)origin_x + flutter_x * scale_x;
-      const gdouble top = (gdouble)origin_y + flutter_y * scale_y;
-      const gdouble right = left + flutter_w * scale_x;
-      const gdouble bottom = top + flutter_h * scale_y;
-      overlay_x = (gint)lround(left);
-      overlay_y = (gint)lround(top);
-      const gint right_i = (gint)lround(right);
-      const gint bottom_i = (gint)lround(bottom);
-      overlay_w = MAX(1, right_i - overlay_x);
-      overlay_h = MAX(1, bottom_i - overlay_y);
-    }
-
-    coord_print(
-        "🐧 Coord map: flutter(%.1f,%.1f %.1fx%.1f) viewLogical=%.1fx%.1f "
-        "flAlloc=%dx%d host=%dx%d origin=%d,%d scale=%.3fx%.3f "
-        "-> overlay(%d,%d %dx%d) dpr=%.2f\n",
-        flutter_x,
-        flutter_y,
-        flutter_w,
-        flutter_h,
+    stale = webview_overlay_view_size_is_stale(
         flutter_view_w,
         flutter_view_h,
-        view_px_w,
-        view_px_h,
-        gtk_widget_get_allocated_width(host),
-        gtk_widget_get_allocated_height(host),
-        origin_x,
-        origin_y,
-        scale_x,
-        scale_y,
-        overlay_x,
-        overlay_y,
-        overlay_w,
-        overlay_h,
-        device_pixel_ratio);
+        gtk_widget_get_allocated_width(flutter_widget),
+        gtk_widget_get_allocated_height(flutter_widget));
   }
 
+  const gint left = (gint)lround((gdouble)origin_x + flutter_x);
+  const gint top = (gint)lround((gdouble)origin_y + flutter_y);
+  const gint right = (gint)lround((gdouble)origin_x + flutter_x + flutter_w);
+  const gint bottom = (gint)lround((gdouble)origin_y + flutter_y + flutter_h);
+
+  coord_print(
+      "🐧 Coord map: flutter(%.1f,%.1f %.1fx%.1f) viewLogical=%.1fx%.1f "
+      "origin=%d,%d stale=%d -> overlay(%d,%d %dx%d)\n",
+      flutter_x, flutter_y, flutter_w, flutter_h,
+      flutter_view_w, flutter_view_h,
+      origin_x, origin_y, stale,
+      left, top, right - left, bottom - top);
+
   if (out_x)
-    *out_x = overlay_x;
+    *out_x = left;
   if (out_y)
-    *out_y = overlay_y;
+    *out_y = top;
   if (out_w)
-    *out_w = MAX(1, overlay_w);
+    *out_w = MAX(1, right - left);
   if (out_h)
-    *out_h = MAX(1, overlay_h);
+    *out_h = MAX(1, bottom - top);
+  if (out_stale)
+    *out_stale = stale;
+}
+
+gboolean webview_overlay_intersect_host(gint x,
+                                        gint y,
+                                        gint w,
+                                        gint h,
+                                        gint host_w,
+                                        gint host_h,
+                                        gint *out_x,
+                                        gint *out_y,
+                                        gint *out_w,
+                                        gint *out_h)
+{
+  const gint left = MAX(0, x);
+  const gint top = MAX(0, y);
+  const gint right = MIN(host_w, x + w);
+  const gint bottom = MIN(host_h, y + h);
+  const gboolean non_empty = right > left && bottom > top;
+
+  if (out_x)
+    *out_x = non_empty ? left : 0;
+  if (out_y)
+    *out_y = non_empty ? top : 0;
+  if (out_w)
+    *out_w = non_empty ? right - left : 1;
+  if (out_h)
+    *out_h = non_empty ? bottom - top : 1;
+  return non_empty;
 }

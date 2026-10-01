@@ -69,6 +69,10 @@ bool webview_plugin_try_handle_lifecycle_method(
         view_id = fl_value_get_int(view_id_value);
       }
     }
+    g_message(
+        "Scomm WebKitGTK getNativeHealth: viewId=%ld overlays=%u",
+        (long)view_id,
+        overlay_windows ? g_hash_table_size(overlay_windows) : 0u);
     *out_response = FL_METHOD_RESPONSE(fl_method_success_response_new(
         webview_native_health_snapshot(overlay_windows, view_id)));
     return true;
@@ -142,8 +146,11 @@ bool webview_plugin_try_handle_lifecycle_method(
           overlay_window->webkit_view, user_scripts);
     }
 
-    *out_response = FL_METHOD_RESPONSE(fl_method_success_response_new(
-        webview_native_health_from_overlay(overlay_window)));
+    FlValue *health = webview_native_health_from_overlay(overlay_window);
+    fl_value_set_string_take(
+        health, "overlayCount",
+        fl_value_new_int((gint64)g_hash_table_size(overlay_windows)));
+    *out_response = FL_METHOD_RESPONSE(fl_method_success_response_new(health));
 
     return true;
   }
@@ -320,6 +327,7 @@ bool webview_plugin_try_handle_lifecycle_method(
       if (keep_alive)
       {
         webview_overlay_window_hide(overlay_window);
+        webview_overlay_window_reset_bounds_sequence(overlay_window);
       }
       else
       {
@@ -542,7 +550,12 @@ bool webview_plugin_try_handle_lifecycle_method(
           if (seq_value && fl_value_get_type(seq_value) == FL_VALUE_TYPE_INT)
             sequence = fl_value_get_int(seq_value);
 
-          webview_overlay_window_set_bounds_from_flutter(
+          FlValue *gen_value = fl_value_lookup_string(args, "generation");
+          gint64 generation = 0;
+          if (gen_value && fl_value_get_type(gen_value) == FL_VALUE_TYPE_INT)
+            generation = fl_value_get_int(gen_value);
+
+          const gboolean applied = webview_overlay_window_set_bounds_from_flutter(
               overlay_window,
               use_x,
               use_y,
@@ -551,7 +564,34 @@ bool webview_plugin_try_handle_lifecycle_method(
               view_w,
               view_h,
               dpr,
-              sequence);
+              sequence,
+              generation);
+
+          // Show/hide after geometry so the first paint uses the new slot.
+          FlValue *visible_value = fl_value_lookup_string(args, "visible");
+          gboolean should_show = TRUE;
+          if (visible_value && fl_value_get_type(visible_value) == FL_VALUE_TYPE_BOOL)
+            should_show = fl_value_get_bool(visible_value);
+
+          if (should_show)
+          {
+            webview_overlay_window_hide_others(overlay_windows, overlay_window);
+            webview_overlay_window_show(overlay_window);
+          }
+          else
+          {
+            webview_overlay_window_hide(overlay_window);
+          }
+
+          FlValue *ack = fl_value_new_map();
+          fl_value_set_string_take(ack, "applied", fl_value_new_bool(applied));
+          fl_value_set_string_take(ack, "seq", fl_value_new_int(sequence));
+          fl_value_set_string_take(ack, "x", fl_value_new_int(overlay_window->x));
+          fl_value_set_string_take(ack, "y", fl_value_new_int(overlay_window->y));
+          fl_value_set_string_take(ack, "width", fl_value_new_int(overlay_window->width));
+          fl_value_set_string_take(ack, "height", fl_value_new_int(overlay_window->height));
+          *out_response = FL_METHOD_RESPONSE(fl_method_success_response_new(ack));
+          return true;
         }
         else if (screen_x_value && screen_y_value &&
                  fl_value_get_type(screen_x_value) == FL_VALUE_TYPE_INT &&

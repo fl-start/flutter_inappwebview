@@ -48,18 +48,30 @@ struct _WebViewOverlayWindow
     gint last_screen_y;
     gint last_screen_width;
     gint last_screen_height;
-    gboolean has_reported_host_alloc;
-    gint last_reported_host_alloc_width;
-    gint last_reported_host_alloc_height;
-    gboolean has_reported_parent_configure;
-    gint last_reported_parent_configure_width;
-    gint last_reported_parent_configure_height;
+    gulong host_layout_toplevel_handler_id;
+    // Last FlView / GtkOverlay allocation reported to Dart (dedupe for the
+    // three size-allocate sources, which allocate different widgets).
+    gboolean has_reported_host_layout;
+    gint last_reported_flview_width;
+    gint last_reported_flview_height;
+    gint last_reported_overlay_width;
+    gint last_reported_overlay_height;
+    // Trailing-edge onHostLayoutChanged timer (per instance).
+    guint host_layout_notify_source_id;
     gint64 last_bounds_sequence;
+    gint64 last_generation;
+    gint64 last_stale_sequence_log_us;
     guint idle_force_bounds_source_id;
     guint timeout_force_bounds_32_source_id;
     guint timeout_force_bounds_120_source_id;
     guint idle_raise_source_id;
     guint timeout_raise_32_source_id;
+    // Dart wants the overlay shown (show/hide). Actual GTK visibility also
+    // requires applied bounds and a non-empty intersection with the host.
+    gboolean wants_visible;
+    gboolean hidden_by_host_clip;
+    // Observability: only log show/hide transitions.
+    gboolean logged_visible;
 };
 
 WebViewOverlayWindow *webview_overlay_window_new(
@@ -88,7 +100,9 @@ void webview_overlay_window_set_bounds(
     gint width,
     gint height);
 
-void webview_overlay_window_set_bounds_from_flutter(
+// Returns FALSE when the payload was rejected as out of order (sequence not
+// greater than the last applied one). A sequence <= 0 is always applied.
+gboolean webview_overlay_window_set_bounds_from_flutter(
     WebViewOverlayWindow *instance,
     gdouble x,
     gdouble y,
@@ -97,7 +111,11 @@ void webview_overlay_window_set_bounds_from_flutter(
     gdouble view_width,
     gdouble view_height,
     gdouble device_pixel_ratio,
-    gint64 sequence);
+    gint64 sequence,
+    gint64 generation);
+
+// Forget the last applied sequence (keep-alive park / reattach).
+void webview_overlay_window_reset_bounds_sequence(WebViewOverlayWindow *instance);
 
 void webview_overlay_window_set_bounds_screen(
     WebViewOverlayWindow *instance,

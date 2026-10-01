@@ -87,6 +87,14 @@ WebViewOverlayWindow *webview_overlay_window_new(
     instance->host_layout_overlay_handler_id = g_signal_connect(
         instance->embedding_overlay, "size-allocate",
         G_CALLBACK(webview_overlay_on_host_size_allocate), instance);
+    // Wayland often skips configure-event; toplevel size-allocate still fires
+    // on maximize / drag-resize.
+    if (instance->parent_window)
+    {
+      instance->host_layout_toplevel_handler_id = g_signal_connect(
+          GTK_WIDGET(instance->parent_window), "size-allocate",
+          G_CALLBACK(webview_overlay_on_host_size_allocate), instance);
+    }
     webview_native_health_set_last_error(nullptr);
   }
 
@@ -249,6 +257,14 @@ void webview_overlay_window_destroy(WebViewOverlayWindow *instance)
     instance->host_layout_flutter_handler_id = 0;
   }
 
+  if (instance->host_layout_toplevel_handler_id > 0 && instance->parent_window &&
+      GTK_IS_WIDGET(instance->parent_window))
+  {
+    g_signal_handler_disconnect(G_OBJECT(instance->parent_window),
+                                instance->host_layout_toplevel_handler_id);
+    instance->host_layout_toplevel_handler_id = 0;
+  }
+
   if (instance->webkit_view)
   {
     webview_webkitgtk_destroy(instance->webkit_view);
@@ -287,12 +303,16 @@ void webview_overlay_window_show(WebViewOverlayWindow *instance)
 
   if (instance->embedded_widget_mode)
   {
-    if (instance->container)
+    instance->wants_visible = TRUE;
+    webview_overlay_sync_embedded_visibility(instance);
+    if (!instance->logged_visible)
     {
-      gtk_widget_show_all(instance->container);
-      webview_overlay_schedule_raise(instance);
+      instance->logged_visible = TRUE;
+      g_message("Scomm WebKitGTK overlay show: view_id=%ld embedding=gtk_overlay "
+                "bounds_applied=%d",
+                (long)instance->view_id,
+                instance->has_applied_overlay_bounds ? 1 : 0);
     }
-    g_print("🐧 Embedded overlay shown (view_id: %ld)\n", instance->view_id);
     return;
   }
 
@@ -314,9 +334,14 @@ void webview_overlay_window_show(WebViewOverlayWindow *instance)
     gtk_window_present(instance->window);
   }
 
-  g_print("🐧 %s window shown (view_id: %ld)\n",
-          instance->window_mode == WEBVIEW_WINDOW_MODE_SEPARATE ? "Separate" : "Overlay",
-          instance->view_id);
+  if (!instance->logged_visible)
+  {
+    instance->logged_visible = TRUE;
+    g_message("Scomm WebKitGTK overlay show: view_id=%ld embedding=%s",
+              (long)instance->view_id,
+              instance->window_mode == WEBVIEW_WINDOW_MODE_SEPARATE ? "separate"
+                                                                   : "popup");
+  }
 }
 
 void webview_overlay_window_hide(WebViewOverlayWindow *instance)
@@ -325,6 +350,7 @@ void webview_overlay_window_hide(WebViewOverlayWindow *instance)
     return;
   if (instance->embedded_widget_mode)
   {
+    instance->wants_visible = FALSE;
     if (instance->container)
       gtk_widget_hide(instance->container);
   }
@@ -332,7 +358,17 @@ void webview_overlay_window_hide(WebViewOverlayWindow *instance)
   {
     gtk_widget_hide(GTK_WIDGET(instance->window));
   }
-  g_print("🐧 Overlay window hidden (view_id: %ld)\n", instance->view_id);
+  if (instance->logged_visible)
+  {
+    instance->logged_visible = FALSE;
+    g_message(
+        "Scomm WebKitGTK overlay hide: view_id=%ld embedding=%s",
+        (long)instance->view_id,
+        instance->embedded_widget_mode
+            ? "gtk_overlay"
+            : (instance->window_mode == WEBVIEW_WINDOW_MODE_SEPARATE ? "separate"
+                                                                    : "popup"));
+  }
 }
 
 typedef struct
@@ -436,7 +472,14 @@ void webview_overlay_window_set_bounds(
   }
 }
 
-void webview_overlay_window_set_bounds_from_flutter(
+void webview_overlay_window_reset_bounds_sequence(WebViewOverlayWindow *instance)
+{
+  if (!instance)
+    return;
+  instance->last_bounds_sequence = 0;
+}
+
+gboolean webview_overlay_window_set_bounds_from_flutter(
     WebViewOverlayWindow *instance,
     gdouble x,
     gdouble y,
@@ -445,19 +488,32 @@ void webview_overlay_window_set_bounds_from_flutter(
     gdouble view_width,
     gdouble view_height,
     gdouble device_pixel_ratio,
-    gint64 sequence)
+    gint64 sequence,
+    gint64 generation)
 {
   if (!instance)
-    return;
+    return FALSE;
+
+  if (generation > 0 && generation != instance->last_generation)
+  {
+    instance->last_generation = generation;
+    instance->last_bounds_sequence = 0;
+  }
 
   if (sequence > 0 && sequence <= instance->last_bounds_sequence)
   {
-    coord_print(
-        "🐧 setBounds stale seq=%ld <= last=%ld (view_id=%ld) — ignored\n",
-        (long)sequence,
-        (long)instance->last_bounds_sequence,
-        instance->view_id);
-    return;
+    const gint64 now_us = g_get_monotonic_time();
+    if (now_us - instance->last_stale_sequence_log_us > G_USEC_PER_SEC)
+    {
+      instance->last_stale_sequence_log_us = now_us;
+      g_message(
+          "Scomm WebKitGTK setBounds rejected: view_id=%ld seq=%" G_GINT64_FORMAT
+          " <= last=%" G_GINT64_FORMAT,
+          (long)instance->view_id,
+          sequence,
+          instance->last_bounds_sequence);
+    }
+    return FALSE;
   }
   if (sequence > 0)
     instance->last_bounds_sequence = sequence;
@@ -466,6 +522,7 @@ void webview_overlay_window_set_bounds_from_flutter(
   gint overlay_y = 0;
   gint overlay_w = 1;
   gint overlay_h = 1;
+  gboolean stale = FALSE;
   webview_overlay_convert_flutter_bounds(
       instance,
       x,
@@ -474,16 +531,46 @@ void webview_overlay_window_set_bounds_from_flutter(
       height,
       view_width,
       view_height,
-      device_pixel_ratio,
       &overlay_x,
       &overlay_y,
       &overlay_w,
-      &overlay_h);
+      &overlay_h,
+      &stale);
+
+  const gboolean bounds_changed =
+      overlay_x != instance->x || overlay_y != instance->y ||
+      overlay_w != instance->width || overlay_h != instance->height ||
+      !instance->has_applied_overlay_bounds;
 
   instance->x = overlay_x;
   instance->y = overlay_y;
   instance->width = overlay_w;
   instance->height = overlay_h;
+
+  if (bounds_changed)
+  {
+    g_message(
+        "Scomm WebKitGTK setBounds: view_id=%ld flutter=%.0f,%.0f %.0fx%.0f "
+        "viewLogical=%.0fx%.0f dpr=%.2f -> overlay=%d,%d %dx%d%s",
+        (long)instance->view_id,
+        x,
+        y,
+        width,
+        height,
+        view_width,
+        view_height,
+        device_pixel_ratio,
+        overlay_x,
+        overlay_y,
+        overlay_w,
+        overlay_h,
+        stale ? " (stale view metrics)" : "");
+  }
+
+  // Applying identity coordinates is the best available guess while Dart is
+  // behind the window metrics; ask Dart to re-measure once it catches up.
+  if (stale)
+    webview_overlay_schedule_host_layout_changed(instance);
 
   if (instance->embedded_widget_mode)
   {
@@ -494,11 +581,12 @@ void webview_overlay_window_set_bounds_from_flutter(
         overlay_w,
         overlay_h,
         "Overlay bounds (flutter->overlay)");
-    return;
+    return TRUE;
   }
 
   webview_overlay_window_set_bounds(
       instance, overlay_x, overlay_y, overlay_w, overlay_h);
+  return TRUE;
 }
 
 void webview_overlay_window_set_bounds_screen(
