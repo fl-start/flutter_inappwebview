@@ -5,7 +5,10 @@
 #include <regex>
 #include <set>
 #include <Shlwapi.h>
+#include <commctrl.h>
 #include <flutter/encodable_value.h>
+
+#pragma comment(lib, "comctl32.lib")
 #include <wil/wrl.h>
 #include <winrt/Windows.Foundation.h>
 
@@ -71,6 +74,15 @@ namespace flutter_inappwebview_plugin
         std::cerr << "Cannot create InAppWebView surface." << std::endl;
       }
       registerSurfaceEventHandlers();
+      // Outermost subclass so a posted geometry message is handled after
+      // WM_SIZE / WM_NCCALCSIZE return. put_Bounds on this stack deadlocks
+      // WebView2 during a true maximize.
+      geometry_hwnd_ = parentWindow;
+      if (!SetWindowSubclass(parentWindow, &InAppWebView::CompositionHostSubclassProc,
+        kGeometrySubclassId, reinterpret_cast<DWORD_PTR>(this))) {
+        geometry_hwnd_ = nullptr;
+        std::cerr << "Cannot subclass composition host." << std::endl;
+      }
     }
     else {
       this->webViewController->put_IsVisible(true);
@@ -3781,38 +3793,121 @@ namespace flutter_inappwebview_plugin
     evaluateJavascript(script, ContentWorld::page(), nullptr);
   }
 
+  LRESULT CALLBACK InAppWebView::CompositionHostSubclassProc(
+    HWND hwnd,
+    UINT message,
+    WPARAM wparam,
+    LPARAM lparam,
+    UINT_PTR subclass_id,
+    DWORD_PTR ref_data)
+  {
+    if (message == kApplyGeometryMessage) {
+      auto* view = reinterpret_cast<InAppWebView*>(ref_data);
+      if (view != nullptr) {
+        view->ApplyPendingGeometry();
+      }
+      return 0;
+    }
+    if (message == WM_NCDESTROY) {
+      RemoveWindowSubclass(hwnd, &InAppWebView::CompositionHostSubclassProc, subclass_id);
+    }
+    return DefSubclassProc(hwnd, message, wparam, lparam);
+  }
+
+  void InAppWebView::ScheduleApplyGeometry()
+  {
+    if (geometry_posted_ || geometry_applying_) {
+      return;
+    }
+    if (geometry_hwnd_ == nullptr) {
+      ApplyPendingGeometry();
+      return;
+    }
+    geometry_posted_ = true;
+    if (!PostMessage(geometry_hwnd_, kApplyGeometryMessage, 0, 0)) {
+      geometry_posted_ = false;
+      ApplyPendingGeometry();
+    }
+  }
+
+  void InAppWebView::ApplyPendingGeometry()
+  {
+    if (geometry_applying_) {
+      return;
+    }
+    geometry_applying_ = true;
+    geometry_posted_ = false;
+
+    const bool has_size = pending_has_size_;
+    const bool has_position = pending_has_position_;
+    const auto width = pending_width_;
+    const auto height = pending_height_;
+    const auto size_scale = pending_size_scale_;
+    const auto x = pending_x_;
+    const auto y = pending_y_;
+    const auto pos_scale = pending_pos_scale_;
+    pending_has_size_ = false;
+    pending_has_position_ = false;
+
+    if (has_size) {
+      ApplySurfaceSizeNow(width, height, size_scale);
+    }
+    if (has_position) {
+      ApplyPositionNow(x, y, pos_scale);
+    }
+
+    geometry_applying_ = false;
+    if (pending_has_size_ || pending_has_position_) {
+      ScheduleApplyGeometry();
+    }
+  }
+
   // flutter_view
   void InAppWebView::setSurfaceSize(size_t width, size_t height, float scale_factor)
   {
-    if (!webViewController) {
+    if (!webViewController || !surface_ || width == 0 || height == 0) {
+      return;
+    }
+    pending_width_ = width;
+    pending_height_ = height;
+    pending_size_scale_ = scale_factor;
+    pending_has_size_ = true;
+    // Coalesce while put_Bounds is already running. The outer apply posts
+    // one follow-up after it returns, so this does not re-enter WebView2.
+    if (!geometry_applying_) {
+      ScheduleApplyGeometry();
+    }
+  }
+
+  void InAppWebView::ApplySurfaceSizeNow(size_t width, size_t height, float scale_factor)
+  {
+    if (!webViewController || !surface_ || width == 0 || height == 0) {
       return;
     }
 
-    if (surface_ && width > 0 && height > 0) {
-      scaleFactor_ = scale_factor;
-      auto scaled_width = width * scale_factor;
-      auto scaled_height = height * scale_factor;
+    scaleFactor_ = scale_factor;
+    auto scaled_width = width * scale_factor;
+    auto scaled_height = height * scale_factor;
 
-      RECT bounds;
-      bounds.left = 0;
-      bounds.top = 0;
-      bounds.right = static_cast<LONG>(scaled_width);
-      bounds.bottom = static_cast<LONG>(scaled_height);
+    RECT bounds;
+    bounds.left = 0;
+    bounds.top = 0;
+    bounds.right = static_cast<LONG>(scaled_width);
+    bounds.bottom = static_cast<LONG>(scaled_height);
 
-      surface_->put_Size({ scaled_width, scaled_height });
+    surface_->put_Size({ scaled_width, scaled_height });
 
-      wil::com_ptr<ICoreWebView2Controller3> webViewController3;
-      if (SUCCEEDED(webViewController->QueryInterface(IID_PPV_ARGS(&webViewController3)))) {
-        webViewController3->put_RasterizationScale(scale_factor);
-      }
+    wil::com_ptr<ICoreWebView2Controller3> webViewController3;
+    if (SUCCEEDED(webViewController->QueryInterface(IID_PPV_ARGS(&webViewController3)))) {
+      webViewController3->put_RasterizationScale(scale_factor);
+    }
 
-      if (webViewController->put_Bounds(bounds) != S_OK) {
-        std::cerr << "Setting webview bounds failed." << std::endl;
-      }
+    if (webViewController->put_Bounds(bounds) != S_OK) {
+      std::cerr << "Setting webview bounds failed." << std::endl;
+    }
 
-      if (surfaceSizeChangedCallback_) {
-        surfaceSizeChangedCallback_(width, height);
-      }
+    if (surfaceSizeChangedCallback_) {
+      surfaceSizeChangedCallback_(width, height);
     }
   }
 
@@ -3821,28 +3916,40 @@ namespace flutter_inappwebview_plugin
     if (!webViewController || !plugin || !plugin->registrar) {
       return;
     }
+    pending_x_ = x;
+    pending_y_ = y;
+    pending_pos_scale_ = scale_factor;
+    pending_has_position_ = true;
+    if (!geometry_applying_) {
+      ScheduleApplyGeometry();
+    }
+  }
 
-    if (x >= 0 && y >= 0) {
-      scaleFactor_ = scale_factor;
-      auto scaled_x = static_cast<int>(x * scale_factor);
-      auto scaled_y = static_cast<int>(y * scale_factor);
+  void InAppWebView::ApplyPositionNow(size_t x, size_t y, float scale_factor)
+  {
+    if (!webViewController || !plugin || !plugin->registrar) {
+      return;
+    }
 
-      auto titleBarHeight = ((GetSystemMetrics(SM_CYCAPTION) + GetSystemMetrics(SM_CYFRAME)) * scale_factor) + GetSystemMetrics(SM_CXPADDEDBORDER);
-      auto borderWidth = (GetSystemMetrics(SM_CXBORDER) + GetSystemMetrics(SM_CXPADDEDBORDER)) * scale_factor;
+    scaleFactor_ = scale_factor;
+    auto scaled_x = static_cast<int>(x * scale_factor);
+    auto scaled_y = static_cast<int>(y * scale_factor);
 
-      RECT flutterWindowRect;
-      HWND flutterWindowHWnd = plugin->registrar->GetView()->GetNativeWindow();
-      GetWindowRect(flutterWindowHWnd, &flutterWindowRect);
+    auto titleBarHeight = ((GetSystemMetrics(SM_CYCAPTION) + GetSystemMetrics(SM_CYFRAME)) * scale_factor) + GetSystemMetrics(SM_CXPADDEDBORDER);
+    auto borderWidth = (GetSystemMetrics(SM_CXBORDER) + GetSystemMetrics(SM_CXPADDEDBORDER)) * scale_factor;
 
-      HWND webViewHWnd;
-      if (succeededOrLog(webViewController->get_ParentWindow(&webViewHWnd))) {
-        ::SetWindowPos(webViewHWnd,
-          nullptr,
-          static_cast<int>(flutterWindowRect.left + scaled_x - borderWidth),
-          static_cast<int>(flutterWindowRect.top + scaled_y - titleBarHeight),
-          0, 0,
-          SWP_NOZORDER | SWP_NOSIZE | SWP_NOACTIVATE);
-      }
+    RECT flutterWindowRect;
+    HWND flutterWindowHWnd = plugin->registrar->GetView()->GetNativeWindow();
+    GetWindowRect(flutterWindowHWnd, &flutterWindowRect);
+
+    HWND webViewHWnd;
+    if (succeededOrLog(webViewController->get_ParentWindow(&webViewHWnd))) {
+      ::SetWindowPos(webViewHWnd,
+        nullptr,
+        static_cast<int>(flutterWindowRect.left + scaled_x - borderWidth),
+        static_cast<int>(flutterWindowRect.top + scaled_y - titleBarHeight),
+        0, 0,
+        SWP_NOZORDER | SWP_NOSIZE | SWP_NOACTIVATE);
     }
   }
 
@@ -4328,6 +4435,11 @@ namespace flutter_inappwebview_plugin
     userContentController = nullptr;
     if (webView) {
       failedLog(webView->Stop());
+    }
+    if (geometry_hwnd_ != nullptr) {
+      RemoveWindowSubclass(geometry_hwnd_, &InAppWebView::CompositionHostSubclassProc,
+        kGeometrySubclassId);
+      geometry_hwnd_ = nullptr;
     }
     HWND parentWindow = nullptr;
     if (webViewCompositionController && webViewController && succeededOrLog(webViewController->get_ParentWindow(&parentWindow))) {

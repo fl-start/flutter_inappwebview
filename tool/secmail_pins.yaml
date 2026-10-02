@@ -19,7 +19,7 @@ shared:
     path: flutter_inappwebview_web
 
 linux:
-  ref: cd794ee352798cebb7da6e13788974b613e4641f
+  ref: 8b3061504cac8781d30890333a2b0ff65ae28670
   packages:
   - name: flutter_inappwebview_linux_webkitgtk
     path: flutter_inappwebview_linux_webkitgtk

@@ -603,7 +603,7 @@ void webview_webkitgtk_evaluate_javascript(
 
   g_print("🐧 Evaluating JavaScript: %s\n", javascript);
 
-  // Use webkit_web_view_evaluate_javascript to evaluate JavaScript (newer API)
+  // WebKitGTK 4.1: webkit_web_view_evaluate_javascript
   webkit_web_view_evaluate_javascript(
       instance->web_view,
       javascript,
@@ -617,7 +617,7 @@ void webview_webkitgtk_evaluate_javascript(
         g_autoptr(FlMethodResponse) response = nullptr;
 
         GError *error = nullptr;
-        // In WebKitGTK 4.1+, evaluate_javascript_finish returns JSCValue* directly
+        // WebKitGTK 4.1: evaluate_javascript_finish returns JSCValue* directly.
         JSCValue *value = webkit_web_view_evaluate_javascript_finish(WEBKIT_WEB_VIEW(source_object),
                                                                      res, &error);
 

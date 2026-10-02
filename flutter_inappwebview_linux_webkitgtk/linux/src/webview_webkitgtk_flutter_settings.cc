@@ -224,7 +224,7 @@ namespace
       return;
     }
 
-    // Geolocation (type name stable across WebKitGTK 4.0 / 4.1).
+    // Geolocation (WebKitGeolocationPermissionRequest type name).
     if (g_strcmp0(g_type_name(G_OBJECT_TYPE(request)), "WebKitGeolocationPermissionRequest") ==
         0)
     {

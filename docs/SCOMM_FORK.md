@@ -10,7 +10,7 @@ This repository tracks upstream [flutter_inappwebview](https://github.com/pichil
 | macOS | `flutter_inappwebview_macos` | WKWebView |
 | iOS | `flutter_inappwebview_ios` | WKWebView |
 | Android | `flutter_inappwebview_android` | Hybrid composition in secMail |
-| Linux | `flutter_inappwebview_linux_webkitgtk` | WebKitGTK 4.1 GtkOverlay (secMail mail viewer) |
+| Linux | `flutter_inappwebview_linux_webkitgtk` | WebKitGTK 4.1 GtkOverlay (secMail mail viewer). WebKitGTK 4.0 / libsoup 2 are unsupported. |
 
 ## Linux vs upstream WPE
 

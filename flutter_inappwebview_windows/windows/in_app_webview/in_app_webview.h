@@ -134,6 +134,9 @@ namespace flutter_inappwebview_plugin
     }
     void setSurfaceSize(size_t width, size_t height, float scale_factor);
     void setPosition(size_t x, size_t y, float scale_factor);
+    /// Applies the latest [setSurfaceSize] / [setPosition] request. Runs from
+    /// a posted window message so `put_Bounds` is not inside `WM_SIZE`.
+    void ApplyPendingGeometry();
     void setCursorPos(double x, double y);
     void setPointerUpdate(int32_t pointer, InAppWebViewPointerEventKind eventKind,
       double x, double y, double size, double pressure);
@@ -251,10 +254,36 @@ namespace flutter_inappwebview_plugin
     static bool isSslError(const COREWEBVIEW2_WEB_ERROR_STATUS& webErrorStatus);
   private:
     // custom_platform_view
+    static constexpr UINT kApplyGeometryMessage = WM_APP + 0x51;
+    static constexpr UINT_PTR kGeometrySubclassId = 0x49415747;
+
+    static LRESULT CALLBACK CompositionHostSubclassProc(
+      HWND hwnd,
+      UINT message,
+      WPARAM wparam,
+      LPARAM lparam,
+      UINT_PTR subclass_id,
+      DWORD_PTR ref_data);
+
     winrt::com_ptr<ABI::Windows::UI::Composition::IVisual> surface_;
     SurfaceSizeChangedCallback surfaceSizeChangedCallback_;
     CursorChangedCallback cursorChangedCallback_;
     float scaleFactor_ = 1.0;
+    HWND geometry_hwnd_ = nullptr;
+    bool geometry_posted_ = false;
+    bool geometry_applying_ = false;
+    bool pending_has_size_ = false;
+    size_t pending_width_ = 0;
+    size_t pending_height_ = 0;
+    float pending_size_scale_ = 1.0f;
+    bool pending_has_position_ = false;
+    size_t pending_x_ = 0;
+    size_t pending_y_ = 0;
+    float pending_pos_scale_ = 1.0f;
+
+    void ScheduleApplyGeometry();
+    void ApplySurfaceSizeNow(size_t width, size_t height, float scale_factor);
+    void ApplyPositionNow(size_t x, size_t y, float scale_factor);
     POINT lastCursorPos_ = { 0, 0 };
     VirtualKeyState virtualKeys_;
 

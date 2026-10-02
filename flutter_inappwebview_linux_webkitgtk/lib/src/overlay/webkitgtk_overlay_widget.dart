@@ -1,25 +1,18 @@
 import 'dart:async';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview_platform_interface/flutter_inappwebview_platform_interface.dart';
 
 import 'webkitgtk_channel_dispatcher.dart';
 import 'webkitgtk_custom_scheme.dart';
-import 'webkitgtk_geometry.dart';
 import 'webkitgtk_keep_alive_pool.dart';
+import 'webkitgtk_native_health.dart';
+import 'webkitgtk_overlay_bounds_sync.dart';
 import 'webkitgtk_overlay_hooks.dart';
 import 'webview_controller_webkitgtk.dart';
 
-/// Toggle for verbose Linux WebKit z-order tracing in the terminal.
-const bool kWebKitZOrderTrace = false;
-
-void _wkz(int viewId, String msg) {
-  if (!kWebKitZOrderTrace) return;
-  debugPrint('🐧[WKZ v$viewId] $msg');
-}
+export 'webkitgtk_overlay_bounds_sync.dart' show kWebKitZOrderTrace;
 
 /// GtkOverlay-hosted WebKitGTK surface for Linux.
 ///
@@ -64,30 +57,29 @@ class WebKitGtkOverlayWidget extends StatefulWidget {
 }
 
 class _WebKitGtkOverlayWidgetState extends State<WebKitGtkOverlayWidget>
-    with WidgetsBindingObserver {
+    with WidgetsBindingObserver, WebKitGtkOverlayBoundsSync {
   static int _nextViewId = 1;
   late final int _viewId;
   WebViewControllerWebKitGTK? _controller;
   bool _isInitialized = false;
-  // Start hidden until first successful bounds sync; avoids a brief flash at
-  // (0,0) or stale keep-alive geometry before the placeholder is measured.
-  bool _nativeVisible = false;
   bool _loggedRoute = false;
   String? _loadError;
   final GlobalKey _placeholderKey = GlobalKey();
   VoidCallback? _overlayGeometryListener;
   VoidCallback? _modalScopeListener;
   VoidCallback? _forceSyncHandler;
-  bool _boundsSendScheduled = false;
-  Size? _lastLayoutConstraints;
-  Size? _pendingMeasurementSize;
-  Offset? _pendingMeasurementOrigin;
-  Offset? _lastKnownPlaceholderOrigin;
-  Size? _lastKnownPlaceholderSize;
-  int _stableMeasurementFrames = 0;
-  int _geometrySequence = 0;
-  WebKitGtkOverlayGeometry? _lastSentGeometry;
-  WebKitGtkOverlayGeometry? _pendingGeometry;
+
+  @override
+  int get overlayViewId => _viewId;
+
+  @override
+  WebViewControllerWebKitGTK? get overlayController => _controller;
+
+  @override
+  bool get overlayInitialized => _isInitialized;
+
+  @override
+  GlobalKey get overlayPlaceholderKey => _placeholderKey;
 
   @override
   void initState() {
@@ -95,29 +87,26 @@ class _WebKitGtkOverlayWidgetState extends State<WebKitGtkOverlayWidget>
     WidgetsBinding.instance.addObserver(this);
     _viewId = WebKitGtkKeepAlivePool.viewIdFor(widget.keepAlive?.id) ??
         _nextViewId++;
-    _wkz(_viewId, 'initState');
+    claimOverlayGeneration();
+    wkzTrace(_viewId, 'initState');
     WebKitGtkChannelDispatcher.registerView(_viewId, _handleMethodCall);
     _initializeWebView();
     _overlayGeometryListener = () {
-      _lastSentGeometry = null;
-      _pendingMeasurementSize = null;
-      _pendingMeasurementOrigin = null;
-      _stableMeasurementFrames = 0;
+      lastSentGeometry = null;
+      lastAckedGeometry = null;
+      pendingMeasurementSize = null;
+      pendingMeasurementOrigin = null;
+      stableMeasurementFrames = 0;
       WebKitGtkOverlayHooks.forceImmediateBoundsSync = true;
-      _scheduleNativeBoundsSync(frames: 5);
-      unawaited(
-        Future<void>.delayed(const Duration(milliseconds: 600), () {
-          WebKitGtkOverlayHooks.forceImmediateBoundsSync = false;
-        }),
-      );
+      scheduleNativeBoundsSync();
     };
     WebKitGtkOverlayHooks.layoutEpoch.addListener(_overlayGeometryListener!);
     _forceSyncHandler = () {
       if (!mounted) return;
       // Do not claim activeEmbeddedViewId here — forceSyncAll runs for every
       // mounted overlay (reader + composer). Each view measures itself.
-      _lastSentGeometry = null;
-      _syncNativeWindowPosition(bypassDebounce: true);
+      lastSentGeometry = null;
+      syncNativeWindowPosition(bypassDebounce: true);
     };
     WebKitGtkOverlayHooks.registerSyncHandler(_forceSyncHandler!);
     // Re-evaluate native visibility whenever a root-navigator dialog/popup
@@ -138,7 +127,7 @@ class _WebKitGtkOverlayWidgetState extends State<WebKitGtkOverlayWidget>
       final route = ModalRoute.of(context);
       final rootNav = Navigator.maybeOf(context, rootNavigator: true);
       final onRoot = route?.navigator == rootNav;
-      _wkz(
+      wkzTrace(
         _viewId,
         'route=${route?.runtimeType} isCurrent=${route?.isCurrent} '
         'onRootNavigator=$onRoot',
@@ -155,7 +144,8 @@ class _WebKitGtkOverlayWidgetState extends State<WebKitGtkOverlayWidget>
   /// current, OR a modal/fullscreen cover is stacked above the shell while THIS
   /// webview lives below it (shell-nested, e.g. the email reader). Webviews that
   /// live inside the covering route (composer / page-builder) stay visible.
-  bool _computeShouldBeVisible() {
+  @override
+  bool computeShouldBeVisible() {
     if (!mounted) return false;
     if (!TickerMode.valuesOf(context).enabled) return false;
     final route = ModalRoute.of(context);
@@ -190,28 +180,29 @@ class _WebKitGtkOverlayWidgetState extends State<WebKitGtkOverlayWidget>
 
   void _reevaluateVisibility() {
     if (!mounted) return;
-    final shouldBeVisible = _computeShouldBeVisible();
-    if (_nativeVisible != shouldBeVisible) {
-      _wkz(
+    final shouldBeVisible = computeShouldBeVisible();
+    if (overlayNativeVisible != shouldBeVisible) {
+      wkzTrace(
         _viewId,
         'reevaluate -> ${shouldBeVisible ? "show" : "hide"} '
         '(rootPopupOpen=${WebKitGtkOverlayHooks.isAnyRootPopupOpen} '
         'popups=${WebKitGtkOverlayHooks.rootPopupCount.value})',
       );
-      _nativeVisible = shouldBeVisible;
-      _setNativeVisibility(shouldBeVisible);
+      overlayNativeVisible = shouldBeVisible;
+      setNativeVisibility(shouldBeVisible);
       // Offstage→visible (compose tab): drop stale geometry so the first
       // setBounds cannot reuse warm-create / wrong-X coords over the inbox.
       if (shouldBeVisible) {
-        _lastSentGeometry = null;
-        _pendingMeasurementSize = null;
-        _pendingMeasurementOrigin = null;
-        _stableMeasurementFrames = 0;
+        lastSentGeometry = null;
+        lastAckedGeometry = null;
+        pendingMeasurementSize = null;
+        pendingMeasurementOrigin = null;
+        stableMeasurementFrames = 0;
         WebKitGtkOverlayHooks.forceImmediateBoundsSync = true;
       }
     }
     if (shouldBeVisible) {
-      _scheduleNativeBoundsSync(frames: 5);
+      scheduleNativeBoundsSync();
     }
   }
 
@@ -238,9 +229,9 @@ class _WebKitGtkOverlayWidgetState extends State<WebKitGtkOverlayWidget>
       );
       _modalScopeListener = null;
     }
-    _pendingGeometry = null;
-    _nativeVisible = false;
-    _setNativeVisibility(false);
+    disposeBoundsSync();
+    overlayNativeVisible = false;
+    setNativeVisibility(false);
     _disposeWebView();
     super.dispose();
   }
@@ -249,8 +240,8 @@ class _WebKitGtkOverlayWidgetState extends State<WebKitGtkOverlayWidget>
   void deactivate() {
     // When this subtree is moved offstage or replaced by a different flow
     // (e.g. settings), ensure native overlay is hidden immediately.
-    _nativeVisible = false;
-    _setNativeVisibility(false);
+    overlayNativeVisible = false;
+    setNativeVisibility(false);
     super.deactivate();
   }
 
@@ -263,70 +254,9 @@ class _WebKitGtkOverlayWidgetState extends State<WebKitGtkOverlayWidget>
 
   @override
   void didChangeMetrics() {
-    _lastSentGeometry = null;
-    _pendingMeasurementSize = null;
-    _pendingMeasurementOrigin = null;
-    _stableMeasurementFrames = 0;
-    WebKitGtkOverlayHooks.forceImmediateBoundsSync = true;
+    resetBoundsMeasurement(forceImmediate: true);
     _reevaluateVisibility();
-    _scheduleNativeBoundsSync(frames: 8);
-    // Compositor/GTK allocation often lags Flutter metrics on maximize.
-    for (final delay in const [
-      Duration(milliseconds: 16),
-      Duration(milliseconds: 48),
-      Duration(milliseconds: 96),
-      Duration(milliseconds: 200),
-      Duration(milliseconds: 400),
-      Duration(milliseconds: 700),
-    ]) {
-      unawaited(
-        Future<void>.delayed(delay, () {
-          if (!mounted) return;
-          _lastSentGeometry = null;
-          _reevaluateVisibility();
-          _syncNativeWindowPosition(bypassDebounce: true);
-        }),
-      );
-    }
-    unawaited(
-      Future<void>.delayed(const Duration(milliseconds: 800), () {
-        WebKitGtkOverlayHooks.forceImmediateBoundsSync = false;
-      }),
-    );
-  }
-
-  /// Shell-nested **mailbox reader** claims [activeEmbeddedViewId].
-  ///
-  /// Composer / page-builder (root-nav dialogs **or** in-shell workspace tabs
-  /// under [exclusiveShellViewId]) must not claim — host maximize repair pushes
-  /// reader-slot geometry to [activeEmbeddedViewId], which would misplace those
-  /// surfaces.
-  void _maybeClaimActiveReader() {
-    if (!_nativeVisible || !mounted) return;
-    final route = ModalRoute.of(context);
-    final rootNav = Navigator.maybeOf(context, rootNavigator: true);
-    final isOnRootNav = route?.navigator == rootNav;
-    if (isOnRootNav) return;
-    // In-shell compose / page-builder: host sets exclusive to the visible
-    // surface. Never let that surface steal the reader id.
-    if (WebKitGtkOverlayHooks.exclusiveShellViewId.value != null) {
-      return;
-    }
-    WebKitGtkOverlayHooks.activeEmbeddedViewId = _viewId;
-  }
-
-  void _scheduleNativeBoundsSync({int frames = 1}) {
-    void run(int remaining) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted) return;
-        _syncNativeWindowPosition(bypassDebounce: true);
-        if (remaining > 1) {
-          run(remaining - 1);
-        }
-      });
-    }
-
-    run(frames);
+    scheduleNativeBoundsSync();
   }
 
   Future<dynamic> _handleMethodCall(MethodCall call) async {
@@ -361,16 +291,11 @@ class _WebKitGtkOverlayWidgetState extends State<WebKitGtkOverlayWidget>
         final payload = call.arguments['payload'];
         return widget.onMessage(name, payload);
       case 'onHostLayoutChanged':
-        _lastSentGeometry = null;
+        lastSentGeometry = null;
+        lastAckedGeometry = null;
         WebKitGtkOverlayHooks.forceImmediateBoundsSync = true;
         _reevaluateVisibility();
-        _syncNativeWindowPosition(bypassDebounce: true);
-        _scheduleNativeBoundsSync(frames: 4);
-        unawaited(
-          Future<void>.delayed(const Duration(milliseconds: 500), () {
-            WebKitGtkOverlayHooks.forceImmediateBoundsSync = false;
-          }),
-        );
+        scheduleNativeBoundsSync();
         break;
       default:
         throw MissingPluginException();
@@ -386,18 +311,24 @@ class _WebKitGtkOverlayWidgetState extends State<WebKitGtkOverlayWidget>
         widget.onWebViewCreated(_controller!);
         await WebKitGtkChannelDispatcher.channel.invokeMethod('show', {'viewId': _viewId});
         setState(() => _isInitialized = true);
-        _scheduleNativeBoundsSync(frames: 2);
+        scheduleNativeBoundsSync();
         return;
       }
 
-      await WebKitGtkChannelDispatcher.channel.invokeMethod('create', {
-        'viewId': _viewId,
-        if (widget.initialSettings != null) 'settings': widget.initialSettings,
-        if (widget.initialUserScripts != null)
-          'userScripts': widget.initialUserScripts!
-              .map((script) => script.toMap())
-              .toList(),
-      });
+      final result = await WebKitGtkChannelDispatcher.channel.invokeMethod(
+        'create',
+        {
+          'viewId': _viewId,
+          if (widget.initialSettings != null) 'settings': widget.initialSettings,
+          if (widget.initialUserScripts != null)
+            'userScripts': widget.initialUserScripts!
+                .map((script) => script.toMap())
+                .toList(),
+        },
+      );
+      WebKitGtkOverlayHooks.reportNativeHealth(
+        WebKitGtkNativeHealth.fromChannel(result),
+      );
 
       _controller = WebViewControllerWebKitGTK(_viewId);
       widget.onWebViewCreated(_controller!);
@@ -418,11 +349,44 @@ class _WebKitGtkOverlayWidgetState extends State<WebKitGtkOverlayWidget>
       }
 
       setState(() => _isInitialized = true);
-      _scheduleNativeBoundsSync(frames: 2);
+      scheduleNativeBoundsSync();
     } catch (e) {
-      setState(() => _loadError = e.toString());
-      widget.onLoadError('', -1, 'Failed to initialize WebView: $e');
+      final health = _healthFromCreateError(e);
+      WebKitGtkOverlayHooks.reportNativeHealth(health);
+      setState(() => _loadError = health.toDiagnosticText());
+      widget.onLoadError('', -1, 'Failed to initialize WebView: ${health.reason ?? e}');
     }
+  }
+
+  WebKitGtkNativeHealth _healthFromCreateError(Object error) {
+    if (error is PlatformException) {
+      return WebKitGtkNativeHealth.fromChannel({
+        ...?_asStringKeyedMap(error.details),
+        'loaded': false,
+        'reason': error.details is Map
+            ? (_asStringKeyedMap(error.details)?['reason'] ?? error.code)
+            : error.code,
+        'lastError': error.message,
+      });
+    }
+    return WebKitGtkNativeHealth(
+      loaded: false,
+      embedding: 'none',
+      gdkBackend: 'unknown',
+      webkitVersion: '',
+      gtkVersion: '',
+      soupMajor: '',
+      webkitApi: 'webkit2gtk-4.1',
+      viewId: _viewId,
+      reason: error.toString(),
+    );
+  }
+
+  Map<String, Object?>? _asStringKeyedMap(Object? raw) {
+    if (raw is! Map) return null;
+    return {
+      for (final entry in raw.entries) '${entry.key}': entry.value,
+    };
   }
 
   Future<void> _disposeWebView() async {
@@ -440,20 +404,34 @@ class _WebKitGtkOverlayWidgetState extends State<WebKitGtkOverlayWidget>
     } catch (_) {}
   }
 
-  Future<void> _setNativeVisibility(bool visible) async {
+  @override
+  Future<void> setNativeVisibility(bool visible) async {
     if (!_isInitialized) return;
     if (_controller == null) return;
     if (!visible) {
-      // Drop any queued bounds so the debounced send can't re-show us.
-      _pendingGeometry = null;
+      lastSentGeometry = null;
     }
-    _wkz(_viewId, 'native ${visible ? "SHOW" : "HIDE"}');
+    wkzTrace(_viewId, 'native ${visible ? "SHOW" : "HIDE"}');
     try {
       await WebKitGtkChannelDispatcher.channel.invokeMethod(visible ? 'show' : 'hide', {
         'viewId': _viewId,
       });
-    } catch (_) {
-      // Best effort visibility sync.
+    } catch (e) {
+      final previous = WebKitGtkOverlayHooks.lastNativeHealth;
+      WebKitGtkOverlayHooks.reportNativeHealth(
+        WebKitGtkNativeHealth(
+          loaded: previous?.loaded ?? true,
+          embedding: previous?.embedding ?? 'unknown',
+          gdkBackend: previous?.gdkBackend ?? 'unknown',
+          webkitVersion: previous?.webkitVersion ?? '',
+          gtkVersion: previous?.gtkVersion ?? '',
+          soupMajor: previous?.soupMajor ?? '',
+          webkitApi: previous?.webkitApi ?? 'webkit2gtk-4.1',
+          viewId: _viewId,
+          warning: 'visibility_sync_failed',
+          lastError: e.toString(),
+        ),
+      );
     }
   }
 
@@ -463,15 +441,15 @@ class _WebKitGtkOverlayWidgetState extends State<WebKitGtkOverlayWidget>
     // Flutter dialogs/popups are rendered above the route in Flutter's overlay,
     // but native GTK surfaces always paint above Flutter. Hiding native WebKit
     // during popup routes prevents the WebKit surface from covering dialogs.
-    final shouldBeVisible = _computeShouldBeVisible();
-    if (_nativeVisible != shouldBeVisible) {
+    final shouldBeVisible = computeShouldBeVisible();
+    if (overlayNativeVisible != shouldBeVisible) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
-        final next = _computeShouldBeVisible();
-        if (_nativeVisible == next) return;
-        _wkz(_viewId, 'build -> ${next ? "show" : "hide"}');
-        _nativeVisible = next;
-        _setNativeVisibility(_nativeVisible);
+        final next = computeShouldBeVisible();
+        if (overlayNativeVisible == next) return;
+        wkzTrace(_viewId, 'build -> ${next ? "show" : "hide"}');
+        overlayNativeVisible = next;
+        setNativeVisibility(overlayNativeVisible);
       });
     }
 
@@ -532,22 +510,23 @@ class _WebKitGtkOverlayWidgetState extends State<WebKitGtkOverlayWidget>
           constraints.maxWidth,
           constraints.maxHeight,
         );
-        if (_lastLayoutConstraints == null ||
-            _lastLayoutConstraints != nextConstraints) {
-          _lastLayoutConstraints = nextConstraints;
-          _lastSentGeometry = null;
-          _scheduleNativeBoundsSync(frames: 5);
+        if (lastLayoutConstraints == null ||
+            lastLayoutConstraints != nextConstraints) {
+          lastLayoutConstraints = nextConstraints;
+          lastSentGeometry = null;
+          lastAckedGeometry = null;
+          scheduleNativeBoundsSync();
         }
 
         // After layout: catch sidebar/Sentria moves where constraints are
         // unchanged for a frame but the placeholder origin shifted.
         WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (!mounted || !_nativeVisible) return;
-          _resyncIfPlaceholderMoved();
+          if (!mounted || !overlayNativeVisible) return;
+          resyncIfPlaceholderMoved();
         });
 
         return MouseRegion(
-          onEnter: (_) => _syncNativeWindowPosition(bypassDebounce: true),
+          onEnter: (_) => syncNativeWindowPosition(bypassDebounce: true),
           child: Listener(
             behavior: HitTestBehavior.translucent,
             onPointerDown: (_) => unawaited(_grabNativeFocus()),
@@ -567,229 +546,10 @@ class _WebKitGtkOverlayWidgetState extends State<WebKitGtkOverlayWidget>
     );
   }
 
-  void _resyncIfPlaceholderMoved() {
-    final placeholderContext = _placeholderKey.currentContext;
-    if (placeholderContext == null) return;
-    final placeholderBox =
-        placeholderContext.findRenderObject() as RenderBox?;
-    final renderView = renderViewForContext(placeholderContext) ??
-        (RendererBinding.instance.renderViews.isEmpty
-            ? null
-            : RendererBinding.instance.renderViews.first);
-    if (placeholderBox == null ||
-        !placeholderBox.hasSize ||
-        renderView == null) {
-      return;
-    }
-    final measured = measureFlViewLogicalRect(
-      placeholder: placeholderBox,
-      renderView: renderView,
-    );
-    if (measured == null) return;
-    final origin = measured.topLeft;
-    final size = measured.size;
-    const epsilon = 0.5;
-    final moved = _lastKnownPlaceholderOrigin == null ||
-        (_lastKnownPlaceholderOrigin!.dx - origin.dx).abs() >= epsilon ||
-        (_lastKnownPlaceholderOrigin!.dy - origin.dy).abs() >= epsilon;
-    final resized = _lastKnownPlaceholderSize == null ||
-        (_lastKnownPlaceholderSize!.width - size.width).abs() >= epsilon ||
-        (_lastKnownPlaceholderSize!.height - size.height).abs() >= epsilon;
-    if (!moved && !resized) return;
-    _lastKnownPlaceholderOrigin = origin;
-    _lastKnownPlaceholderSize = size;
-    _lastSentGeometry = null;
-    _syncNativeWindowPosition(bypassDebounce: true);
-  }
-
   Future<void> _grabNativeFocus() async {
     if (!_isInitialized) return;
     try {
       await _controller?.grabFocus();
     } catch (_) {}
-  }
-
-  Future<void> _notifyPageHostResized() async {
-    final controller = _controller;
-    if (controller == null || !_isInitialized) return;
-    try {
-      await controller.evaluateJavaScript('''
-(function(){
-  try{
-    if(window.__scommOnHostResize){window.__scommOnHostResize();return 'hook';}
-    var root=document.getElementById('scomm-scroll-root');
-    if(root){
-      var maxL=Math.max(0,(root.scrollWidth||0)-(root.clientWidth||0));
-      var maxT=Math.max(0,(root.scrollHeight||0)-(root.clientHeight||0));
-      if(root.scrollLeft>maxL)root.scrollLeft=maxL;
-      if(root.scrollTop>maxT)root.scrollTop=maxT;
-    }
-    window.dispatchEvent(new Event('resize'));
-    return 'fallback';
-  }catch(e){return String(e);}
-})()
-''');
-    } catch (_) {}
-  }
-
-  void _syncNativeWindowPosition({bool bypassDebounce = false}) {
-    if (!_isInitialized) return;
-
-    final shouldBeVisible = _computeShouldBeVisible();
-    if (_nativeVisible != shouldBeVisible) {
-      _nativeVisible = shouldBeVisible;
-      _setNativeVisibility(shouldBeVisible);
-    }
-
-    // Covered / offstage / inactive views must never call setBounds.
-    // Native setBounds always shows + hide_others, which re-surfaces the
-    // mailbox reader on top of compose / page-builder.
-    if (!shouldBeVisible) {
-      return;
-    }
-
-    // Per-view host acceleration (reader maximize). Composer must get null.
-    final Rect? hostBounds =
-        WebKitGtkOverlayHooks.boundsProvider?.call(_viewId);
-    final force = bypassDebounce ||
-        WebKitGtkOverlayHooks.forceImmediateBoundsSync ||
-        hostBounds != null;
-
-    final placeholderContext = _placeholderKey.currentContext;
-    RenderBox? placeholderBox;
-    RenderView? renderView;
-    if (placeholderContext != null) {
-      placeholderBox = placeholderContext.findRenderObject() as RenderBox?;
-      renderView = renderViewForContext(placeholderContext);
-    }
-    renderView ??= RendererBinding.instance.renderViews.isEmpty
-        ? null
-        : RendererBinding.instance.renderViews.first;
-    if (renderView == null) return;
-
-    try {
-      final Offset overlayOffset;
-      final Size size;
-      if (hostBounds != null) {
-        // Host must already return FlView-local logical pixels.
-        overlayOffset = hostBounds.topLeft;
-        size = hostBounds.size;
-      } else {
-        if (placeholderBox == null || !placeholderBox.hasSize) return;
-        final measured = measureFlViewLogicalRect(
-          placeholder: placeholderBox,
-          renderView: renderView,
-        );
-        if (measured == null) return;
-        overlayOffset = measured.topLeft;
-        size = measured.size;
-      }
-
-      final double effectiveWidth = size.width;
-      final double effectiveHeight = size.height;
-      if (effectiveWidth <= 0 || effectiveHeight <= 0) return;
-
-      final dpr = renderView.flutterView.devicePixelRatio;
-      final logicalViewSize = renderView.size;
-      final viewWidth = logicalViewSize.width;
-      final viewHeight = logicalViewSize.height;
-
-      if (!force) {
-        final measurement = Size(effectiveWidth, effectiveHeight);
-        final origin = overlayOffset;
-        final sizeStable = _pendingMeasurementSize != null &&
-            (_pendingMeasurementSize!.width - measurement.width).abs() < 0.5 &&
-            (_pendingMeasurementSize!.height - measurement.height).abs() < 0.5;
-        final originStable = _pendingMeasurementOrigin != null &&
-            (_pendingMeasurementOrigin!.dx - origin.dx).abs() < 0.5 &&
-            (_pendingMeasurementOrigin!.dy - origin.dy).abs() < 0.5;
-        if (sizeStable && originStable) {
-          _stableMeasurementFrames++;
-        } else {
-          _pendingMeasurementSize = measurement;
-          _pendingMeasurementOrigin = origin;
-          _stableMeasurementFrames = 0;
-        }
-        if (_stableMeasurementFrames < 1) {
-          _scheduleNativeBoundsSync(frames: 1);
-          return;
-        }
-      }
-
-      final geometry = WebKitGtkOverlayGeometry(
-        viewId: _viewId,
-        sequence: ++_geometrySequence,
-        visible: _nativeVisible,
-        left: overlayOffset.dx,
-        top: overlayOffset.dy,
-        right: overlayOffset.dx + effectiveWidth,
-        bottom: overlayOffset.dy + effectiveHeight,
-        viewWidth: viewWidth,
-        viewHeight: viewHeight,
-        devicePixelRatio: dpr,
-      );
-      if (!force &&
-          _lastSentGeometry != null &&
-          _lastSentGeometry!.nearlyEquals(geometry)) {
-        return;
-      }
-
-      void sendGeometry(WebKitGtkOverlayGeometry target) {
-        if (!mounted) return;
-        // Do not re-check !_nativeVisible here — maximize repair must land even
-        // when visibility flipped mid-frame; show/hide is handled separately.
-        _pendingGeometry = null;
-        _lastSentGeometry = target;
-        _maybeClaimActiveReader();
-        WebKitGtkOverlayHooks.onNativeBoundsSent?.call(
-          x: target.left,
-          y: target.top,
-          width: target.width,
-          height: target.height,
-        );
-        _wkz(
-          _viewId,
-          'setBounds seq=${target.sequence} '
-          'x=${target.left.round()},y=${target.top.round()} '
-          'size=${target.width.round()}x${target.height.round()} '
-          'view=${target.viewWidth.round()}x${target.viewHeight.round()} '
-          'dpr=${target.devicePixelRatio.toStringAsFixed(2)} '
-          'space=${WebKitGtkOverlayGeometry.coordinateSpace} '
-          'visible=$_nativeVisible host=${hostBounds != null}',
-        );
-        WebKitGtkChannelDispatcher.channel.invokeMethod(
-          'setBounds',
-          target.toMethodChannelArgs(),
-        );
-        // Clamp HTML scroll + fire resize so wide mail / media queries reflow
-        // after sidebar, Sentria, or maximize change the surface size.
-        unawaited(_notifyPageHostResized());
-        if (_nativeVisible) {
-          // Ensure surface is shown after bounds land (hide may have raced).
-          unawaited(_setNativeVisibility(true));
-        } else {
-          unawaited(_setNativeVisibility(false));
-        }
-      }
-
-      if (force) {
-        _pendingGeometry = null;
-        sendGeometry(geometry);
-      } else {
-        _pendingGeometry = geometry;
-        if (_boundsSendScheduled) return;
-        _boundsSendScheduled = true;
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          _boundsSendScheduled = false;
-          final target = _pendingGeometry;
-          if (!mounted || target == null) return;
-          sendGeometry(target);
-        });
-      }
-    } catch (e, st) {
-      if (kWebKitZOrderTrace) {
-        debugPrint('🐧[WKZ v$_viewId] COORD sync failed: $e\n$st');
-      }
-    }
   }
 }

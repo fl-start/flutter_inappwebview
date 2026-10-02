@@ -9,6 +9,22 @@
 #include "webview_webkitgtk.h"
 #include "webview_webkitgtk_flutter_settings.h"
 #include "webview_plugin_methods.h"
+#include "webview_native_health.h"
+
+static FlMethodResponse *webview_error_with_reason(const gchar *code,
+                                                   const gchar *message,
+                                                   const gchar *reason)
+{
+  webview_native_health_set_last_error(reason);
+  g_warning("Scomm WebKitGTK %s: %s (%s)", code, message, reason ? reason : "");
+  FlValue *details = fl_value_new_map();
+  webview_native_health_fill_runtime(details);
+  if (reason)
+  {
+    fl_value_set_string_take(details, "reason", fl_value_new_string(reason));
+  }
+  return FL_METHOD_RESPONSE(fl_method_error_response_new(code, message, details));
+}
 
 // Optional StandardCodec map under "settings" (same for create / ensure / open / applySettings).
 static FlValue *webview_plugin_lookup_settings_map(FlValue *args)
@@ -41,6 +57,26 @@ bool webview_plugin_try_handle_lifecycle_method(
     FlMethodResponse **out_response)
 {
   *out_response = nullptr;
+
+  if (g_strcmp0(method, kMethodGetNativeHealth) == 0)
+  {
+    gint64 view_id = -1;
+    if (args && fl_value_get_type(args) == FL_VALUE_TYPE_MAP)
+    {
+      FlValue *view_id_value = fl_value_lookup_string(args, "viewId");
+      if (view_id_value && fl_value_get_type(view_id_value) == FL_VALUE_TYPE_INT)
+      {
+        view_id = fl_value_get_int(view_id_value);
+      }
+    }
+    g_message(
+        "Scomm WebKitGTK getNativeHealth: viewId=%ld overlays=%u",
+        (long)view_id,
+        overlay_windows ? g_hash_table_size(overlay_windows) : 0u);
+    *out_response = FL_METHOD_RESPONSE(fl_method_success_response_new(
+        webview_native_health_snapshot(overlay_windows, view_id)));
+    return true;
+  }
 
   if (g_strcmp0(method, kMethodCreate) == 0)
   {
@@ -81,9 +117,8 @@ bool webview_plugin_try_handle_lifecycle_method(
     FlView *flutter_view = get_flutter_view(registrar);
     if (!flutter_view)
     {
-      *out_response = FL_METHOD_RESPONSE(fl_method_error_response_new(
-          "UNAVAILABLE", "Flutter view not ready", nullptr));
-
+      *out_response = webview_error_with_reason(
+          "UNAVAILABLE", "Flutter view not ready", "flutter_view_not_ready");
       return true;
     }
 
@@ -94,9 +129,11 @@ bool webview_plugin_try_handle_lifecycle_method(
 
     if (!overlay_window)
     {
-      *out_response = FL_METHOD_RESPONSE(fl_method_error_response_new(
-          "INTERNAL_ERROR", "Failed to create overlay window", nullptr));
-
+      const gchar *reason = webview_native_health_last_error();
+      *out_response = webview_error_with_reason(
+          "INTERNAL_ERROR",
+          "Failed to create overlay window",
+          reason ? reason : "overlay_create_failed");
       return true;
     }
 
@@ -109,7 +146,11 @@ bool webview_plugin_try_handle_lifecycle_method(
           overlay_window->webkit_view, user_scripts);
     }
 
-    *out_response = FL_METHOD_RESPONSE(fl_method_success_response_new(nullptr));
+    FlValue *health = webview_native_health_from_overlay(overlay_window);
+    fl_value_set_string_take(
+        health, "overlayCount",
+        fl_value_new_int((gint64)g_hash_table_size(overlay_windows)));
+    *out_response = FL_METHOD_RESPONSE(fl_method_success_response_new(health));
 
     return true;
   }
@@ -157,9 +198,8 @@ bool webview_plugin_try_handle_lifecycle_method(
     FlView *flutter_view = get_flutter_view(registrar);
     if (!flutter_view)
     {
-      *out_response = FL_METHOD_RESPONSE(fl_method_error_response_new(
-          "UNAVAILABLE", "Flutter view not ready", nullptr));
-
+      *out_response = webview_error_with_reason(
+          "UNAVAILABLE", "Flutter view not ready", "flutter_view_not_ready");
       return true;
     }
 
@@ -170,14 +210,17 @@ bool webview_plugin_try_handle_lifecycle_method(
 
     if (!overlay_window)
     {
-      *out_response = FL_METHOD_RESPONSE(fl_method_error_response_new(
-          "INTERNAL_ERROR", "Failed to create overlay window", nullptr));
-
+      const gchar *reason = webview_native_health_last_error();
+      *out_response = webview_error_with_reason(
+          "INTERNAL_ERROR",
+          "Failed to create overlay window",
+          reason ? reason : "overlay_create_failed");
       return true;
     }
 
     g_hash_table_insert(overlay_windows, view_id_key, overlay_window);
-    *out_response = FL_METHOD_RESPONSE(fl_method_success_response_new(nullptr));
+    *out_response = FL_METHOD_RESPONSE(fl_method_success_response_new(
+        webview_native_health_from_overlay(overlay_window)));
 
     return true;
   }
@@ -284,6 +327,7 @@ bool webview_plugin_try_handle_lifecycle_method(
       if (keep_alive)
       {
         webview_overlay_window_hide(overlay_window);
+        webview_overlay_window_reset_bounds_sequence(overlay_window);
       }
       else
       {
@@ -506,7 +550,12 @@ bool webview_plugin_try_handle_lifecycle_method(
           if (seq_value && fl_value_get_type(seq_value) == FL_VALUE_TYPE_INT)
             sequence = fl_value_get_int(seq_value);
 
-          webview_overlay_window_set_bounds_from_flutter(
+          FlValue *gen_value = fl_value_lookup_string(args, "generation");
+          gint64 generation = 0;
+          if (gen_value && fl_value_get_type(gen_value) == FL_VALUE_TYPE_INT)
+            generation = fl_value_get_int(gen_value);
+
+          const gboolean applied = webview_overlay_window_set_bounds_from_flutter(
               overlay_window,
               use_x,
               use_y,
@@ -515,7 +564,34 @@ bool webview_plugin_try_handle_lifecycle_method(
               view_w,
               view_h,
               dpr,
-              sequence);
+              sequence,
+              generation);
+
+          // Show/hide after geometry so the first paint uses the new slot.
+          FlValue *visible_value = fl_value_lookup_string(args, "visible");
+          gboolean should_show = TRUE;
+          if (visible_value && fl_value_get_type(visible_value) == FL_VALUE_TYPE_BOOL)
+            should_show = fl_value_get_bool(visible_value);
+
+          if (should_show)
+          {
+            webview_overlay_window_hide_others(overlay_windows, overlay_window);
+            webview_overlay_window_show(overlay_window);
+          }
+          else
+          {
+            webview_overlay_window_hide(overlay_window);
+          }
+
+          FlValue *ack = fl_value_new_map();
+          fl_value_set_string_take(ack, "applied", fl_value_new_bool(applied));
+          fl_value_set_string_take(ack, "seq", fl_value_new_int(sequence));
+          fl_value_set_string_take(ack, "x", fl_value_new_int(overlay_window->x));
+          fl_value_set_string_take(ack, "y", fl_value_new_int(overlay_window->y));
+          fl_value_set_string_take(ack, "width", fl_value_new_int(overlay_window->width));
+          fl_value_set_string_take(ack, "height", fl_value_new_int(overlay_window->height));
+          *out_response = FL_METHOD_RESPONSE(fl_method_success_response_new(ack));
+          return true;
         }
         else if (screen_x_value && screen_y_value &&
                  fl_value_get_type(screen_x_value) == FL_VALUE_TYPE_INT &&

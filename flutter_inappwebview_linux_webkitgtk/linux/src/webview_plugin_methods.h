@@ -27,6 +27,7 @@ enum class WebViewPluginMethod
   kUnregisterSchemeRoute,
   kSetZoom,
   kApplySettings,
+  kGetNativeHealth,
   kUnknown,
 };
 
@@ -53,5 +54,6 @@ static constexpr const char *kMethodSetZoom = "setZoom";
 /// Optional map under key "settings" (same shape as create/ensure) or full map as args.
 /// Applies WebKitGTK policies for any embedder; unknown keys are ignored.
 static constexpr const char *kMethodApplySettings = "applySettings";
+static constexpr const char *kMethodGetNativeHealth = "getNativeHealth";
 
 #endif // WEBVIEW_PLUGIN_METHODS_H_
