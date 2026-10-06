@@ -90,6 +90,31 @@ static gboolean timeout_raise_embedded_overlay_child(gpointer user_data)
   return G_SOURCE_REMOVE;
 }
 
+// GTK recomputes a widget clip on every allocation, so a clip set from the
+// bounds-apply path is overwritten by the next size-allocate. Set it from the
+// widget's own size-allocate (run after the default handler) instead.
+void webview_overlay_on_embedded_widget_size_allocate(GtkWidget *widget,
+                                                      GtkAllocation *allocation,
+                                                      gpointer user_data)
+{
+  (void)user_data;
+  if (!widget || !allocation || allocation->width <= 0 || allocation->height <= 0)
+    return;
+  GdkRectangle clip = {0, 0, allocation->width, allocation->height};
+  gtk_widget_set_clip(widget, &clip);
+}
+
+static void connect_clip_on_allocate(GtkWidget *widget)
+{
+  if (!widget || g_object_get_data(G_OBJECT(widget), "scomm-clip-on-allocate"))
+    return;
+  g_object_set_data(G_OBJECT(widget), "scomm-clip-on-allocate",
+                    GINT_TO_POINTER(1));
+  g_signal_connect_after(
+      widget, "size-allocate",
+      G_CALLBACK(webview_overlay_on_embedded_widget_size_allocate), nullptr);
+}
+
 void webview_overlay_on_embedded_container_realize(GtkWidget *widget,
                                                    gpointer user_data)
 {
@@ -299,21 +324,11 @@ void webview_overlay_apply_embedded_bounds(
       gtk_widget_set_hexpand(web_view_widget, TRUE);
       gtk_widget_set_vexpand(web_view_widget, TRUE);
       gtk_widget_set_size_request(web_view_widget, bounded_width, bounded_height);
-      if (gtk_widget_get_realized(web_view_widget) &&
-          gtk_widget_get_visible(web_view_widget))
-      {
-        GdkRectangle clip = {0, 0, bounded_width, bounded_height};
-        gtk_widget_set_clip(web_view_widget, &clip);
-      }
+      connect_clip_on_allocate(web_view_widget);
     }
   }
 
-  if (gtk_widget_get_realized(instance->container) &&
-      gtk_widget_get_visible(instance->container))
-  {
-    GdkRectangle clip = {0, 0, bounded_width, bounded_height};
-    gtk_widget_set_clip(instance->container, &clip);
-  }
+  connect_clip_on_allocate(instance->container);
 
   if (host && GTK_IS_WIDGET(host))
     gtk_widget_queue_resize(host);

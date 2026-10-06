@@ -19,6 +19,10 @@ void webview_overlay_schedule_raise(WebViewOverlayWindow *instance);
 void webview_overlay_on_embedded_container_realize(GtkWidget *widget,
                                                    gpointer user_data);
 
+void webview_overlay_on_embedded_widget_size_allocate(GtkWidget *widget,
+                                                      GtkAllocation *allocation,
+                                                      gpointer user_data);
+
 void webview_overlay_apply_embedded_bounds(
     WebViewOverlayWindow *instance,
     gint x,
