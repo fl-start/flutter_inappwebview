@@ -1,13 +1,13 @@
 # Canonical flutter_inappwebview pins for secMail (scomm_ai).
 # Mirror these refs in secMail3/pubspec.yaml (dependencies + dependency_overrides).
-# Bump only the tier you changed; run flutter pub get and commit pubspec.lock.
+# All tiers track master; pubspec.lock records the resolved commit.
 #
 # Verify from secMail: ./scripts/verify_inappwebview_pins.sh
 
 repository: https://github.com/fl-start/flutter_inappwebview.git
 
 shared:
-  ref: 7268541e572e229ed2f711ce6f3e266524d0b25e
+  ref: master
   packages:
   - name: flutter_inappwebview
     path: flutter_inappwebview
@@ -19,31 +19,31 @@ shared:
     path: flutter_inappwebview_web
 
 linux:
-  ref: 19afb3877b1f219cc49d9fab78413b1a49e4675b
+  ref: master
   packages:
   - name: flutter_inappwebview_linux_webkitgtk
     path: flutter_inappwebview_linux_webkitgtk
 
 windows:
-  ref: 272923674724928cea110aab590586ea10b4cdab
+  ref: master
   packages:
   - name: flutter_inappwebview_windows
     path: flutter_inappwebview_windows
 
 macos:
-  ref: 7268541e572e229ed2f711ce6f3e266524d0b25e
+  ref: master
   packages:
   - name: flutter_inappwebview_macos
     path: flutter_inappwebview_macos
 
 android:
-  ref: 7268541e572e229ed2f711ce6f3e266524d0b25e
+  ref: master
   packages:
   - name: flutter_inappwebview_android
     path: flutter_inappwebview_android
 
 ios:
-  ref: 7268541e572e229ed2f711ce6f3e266524d0b25e
+  ref: master
   packages:
   - name: flutter_inappwebview_ios
     path: flutter_inappwebview_ios
