@@ -104,6 +104,16 @@ mixin WebKitGtkOverlayBoundsSync<T extends StatefulWidget> on State<T> {
     );
   }
 
+  /// True when the placeholder is laid out but nothing of it is visible
+  /// (clipped away or outside the view). Distinct from "not laid out yet".
+  bool _slotFullyClipped() {
+    final ctx = overlayPlaceholderKey.currentContext;
+    if (ctx == null) return false;
+    final box = ctx.findRenderObject();
+    if (box is! RenderBox || !box.attached || !box.hasSize) return false;
+    return _measureSlot() == null;
+  }
+
   Future<void> notifyPageHostResized() async {
     final controller = overlayController;
     if (controller == null || !overlayInitialized) return;
@@ -149,7 +159,9 @@ mixin WebKitGtkOverlayBoundsSync<T extends StatefulWidget> on State<T> {
   void syncNativeWindowPosition({bool bypassDebounce = false}) {
     if (!overlayInitialized) return;
 
-    final shouldBeVisible = computeShouldBeVisible();
+    // A slot clipped to nothing must hide the native view; returning early
+    // (as for an unmeasurable slot) would leave it at its last position.
+    final shouldBeVisible = computeShouldBeVisible() && !_slotFullyClipped();
     if (overlayNativeVisible != shouldBeVisible) {
       overlayNativeVisible = shouldBeVisible;
       unawaited(setNativeVisibility(shouldBeVisible));

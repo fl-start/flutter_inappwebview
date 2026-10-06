@@ -61,6 +61,8 @@ struct _WebViewOverlayWindow
     gint64 last_bounds_sequence;
     gint64 last_generation;
     gint64 last_stale_sequence_log_us;
+    // Consecutive stale-metrics payloads; caps the onHostLayoutChanged retry.
+    gint stale_retry_count;
     guint idle_force_bounds_source_id;
     guint timeout_force_bounds_32_source_id;
     guint timeout_force_bounds_120_source_id;

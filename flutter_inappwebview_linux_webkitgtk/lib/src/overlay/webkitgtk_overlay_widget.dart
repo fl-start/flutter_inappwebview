@@ -309,8 +309,16 @@ class _WebKitGtkOverlayWidgetState extends State<WebKitGtkOverlayWidget>
       if (reused != null) {
         _controller = reused;
         widget.onWebViewCreated(_controller!);
-        await WebKitGtkChannelDispatcher.channel.invokeMethod('show', {'viewId': _viewId});
+        if (!mounted) return;
         setState(() => _isInitialized = true);
+        // Native keeps the parked view hidden with no applied bounds. Only show
+        // when this host should actually be visible; the first setBounds then
+        // positions it. An unconditional show used to leave a stale-position
+        // overlay on screen when the view should have stayed hidden.
+        if (computeShouldBeVisible()) {
+          overlayNativeVisible = true;
+          await setNativeVisibility(true);
+        }
         scheduleNativeBoundsSync();
         return;
       }

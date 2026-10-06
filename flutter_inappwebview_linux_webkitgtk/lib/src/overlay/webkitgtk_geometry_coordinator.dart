@@ -4,6 +4,7 @@ import 'package:flutter/scheduler.dart';
 import 'package:flutter/widgets.dart';
 
 import 'webkitgtk_geometry.dart';
+import 'webkitgtk_overlay_hooks.dart';
 
 /// Host-published Flutter overlays (toasts) that paint above the reader slot
 /// but under native WebKit. Rects are FlView-local logical pixels.
@@ -77,6 +78,10 @@ class WebKitGtkGeometryCoordinator {
     for (final client in _clients.toList(growable: false)) {
       client();
     }
+    // One-shot: callers set forceImmediateBoundsSync to bypass the stability
+    // gate for this pass only. Leaving it set disabled the gate and the
+    // unchanged-geometry dedupe permanently (a setBounds per metrics tick).
+    WebKitGtkOverlayHooks.forceImmediateBoundsSync = false;
   }
 
   @visibleForTesting

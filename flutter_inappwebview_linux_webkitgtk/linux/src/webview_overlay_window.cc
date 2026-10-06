@@ -10,6 +10,9 @@
 #include <flutter_linux/flutter_linux.h>
 #include <gtk/gtk.h>
 
+// Max consecutive onHostLayoutChanged re-measures for stale view metrics.
+static constexpr gint kMaxStaleRetries = 3;
+
 static WebViewOverlayWindow *fail_overlay_new(WebViewOverlayWindow *instance,
                                               const gchar *reason)
 {
@@ -477,6 +480,11 @@ void webview_overlay_window_reset_bounds_sequence(WebViewOverlayWindow *instance
   if (!instance)
     return;
   instance->last_bounds_sequence = 0;
+  // Keep-alive park: drop applied bounds so a re-attached view cannot be shown
+  // at a stale rectangle (window may have been resized while parked). The
+  // container stays hidden until the next setBounds applies fresh geometry.
+  instance->has_applied_overlay_bounds = FALSE;
+  instance->stale_retry_count = 0;
 }
 
 gboolean webview_overlay_window_set_bounds_from_flutter(
@@ -569,8 +577,17 @@ gboolean webview_overlay_window_set_bounds_from_flutter(
 
   // Applying identity coordinates is the best available guess while Dart is
   // behind the window metrics; ask Dart to re-measure once it catches up.
-  if (stale)
+  // Capped: if Dart's logical size never matches the FlView allocation
+  // (fractional scale / embedder rounding) an uncapped retry loops forever.
+  if (!stale)
+  {
+    instance->stale_retry_count = 0;
+  }
+  else if (instance->stale_retry_count < kMaxStaleRetries)
+  {
+    instance->stale_retry_count++;
     webview_overlay_schedule_host_layout_changed(instance);
+  }
 
   if (instance->embedded_widget_mode)
   {
