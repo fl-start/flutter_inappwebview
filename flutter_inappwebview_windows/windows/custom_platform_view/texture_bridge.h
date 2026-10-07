@@ -30,6 +30,9 @@ namespace flutter_inappwebview_plugin
 
     bool Start();
     void Stop();
+    // Stops capture and drops every capture object. Call on the platform
+    // thread before handing the bridge to another thread for destruction.
+    void Shutdown();
 
     void SetOnFrameAvailable(FrameAvailableCallback callback)
     {
@@ -55,6 +58,9 @@ namespace flutter_inappwebview_plugin
     SurfaceSizeChangedCallback surface_size_changed_;
     std::atomic<bool> needs_update_ = false;
     winrt::com_ptr<ID3D11Texture2D> last_frame_;
+    // Owns the buffer behind |last_frame_| so the pool cannot reuse it.
+    winrt::com_ptr<ABI::Windows::Graphics::Capture::IDirect3D11CaptureFrame>
+      last_capture_frame_;
     std::optional<std::chrono::high_resolution_clock::time_point>
       last_frame_timestamp_;
 
@@ -71,6 +77,7 @@ namespace flutter_inappwebview_plugin
     virtual void StopInternal();
     void OnFrameArrived();
     bool ShouldDropFrame();
+    void ReleaseLastFrame();
 
     // corresponds to DXGI_FORMAT_B8G8R8A8_UNORM
     static constexpr auto kPixelFormat = ABI::Windows::Graphics::DirectX::

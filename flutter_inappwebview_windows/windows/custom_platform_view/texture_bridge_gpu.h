@@ -25,5 +25,6 @@ namespace flutter_inappwebview_plugin
 
     void ProcessFrame(winrt::com_ptr<ID3D11Texture2D> src_texture);
     void EnsureSurface(uint32_t width, uint32_t height);
+    void ResetSurface();
   };
 }

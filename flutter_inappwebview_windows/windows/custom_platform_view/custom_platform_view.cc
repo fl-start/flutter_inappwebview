@@ -200,7 +200,16 @@ namespace flutter_inappwebview_plugin
   {
     debugLog("dealloc CustomPlatformView");
     event_sink_ = nullptr;
-    texture_registrar_->UnregisterTexture(texture_id_, nullptr);
+
+    // Unregistering finishes later on the raster thread, which keeps calling
+    // the texture callback until then. Stop capture here on the platform
+    // thread, and keep the texture and bridge alive until the engine is done.
+    texture_bridge_->Shutdown();
+    std::shared_ptr<TextureBridge> bridge = std::move(texture_bridge_);
+    std::shared_ptr<flutter::TextureVariant> texture =
+      std::move(flutter_texture_);
+    texture_registrar_->UnregisterTexture(
+      texture_id_, [bridge, texture]() {});
   }
 
   void CustomPlatformView::RegisterEventHandlers()

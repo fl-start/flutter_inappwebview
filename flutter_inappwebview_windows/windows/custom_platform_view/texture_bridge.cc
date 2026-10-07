@@ -11,7 +11,9 @@
 
 namespace flutter_inappwebview_plugin
 {
-  const int kNumBuffers = 1;
+  // Two buffers: one held as |last_capture_frame_| for the raster thread to
+  // copy from, one for the pool to write the next frame into.
+  const int kNumBuffers = 2;
 
   TextureBridge::TextureBridge(GraphicsContext* graphics_context,
     ABI::Windows::UI::Composition::IVisual* visual)
@@ -95,6 +97,23 @@ namespace flutter_inappwebview_plugin
     StopInternal();
   }
 
+  void TextureBridge::Shutdown()
+  {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    StopInternal();
+    if (frame_pool_) {
+      if (auto closable =
+        frame_pool_.try_as<ABI::Windows::Foundation::IClosable>()) {
+        closable->Close();
+      }
+      frame_pool_ = nullptr;
+    }
+    if (capture_item_) {
+      capture_item_->remove_Closed(on_closed_token_);
+      capture_item_ = nullptr;
+    }
+  }
+
   void TextureBridge::StopInternal()
   {
     if (is_running_) {
@@ -106,43 +125,67 @@ namespace flutter_inappwebview_plugin
       closable->Close();
       capture_session_ = nullptr;
     }
+    ReleaseLastFrame();
+  }
+
+  void TextureBridge::ReleaseLastFrame()
+  {
+    last_frame_ = nullptr;
+    if (last_capture_frame_) {
+      if (auto closable = last_capture_frame_
+        .try_as<ABI::Windows::Foundation::IClosable>()) {
+        closable->Close();
+      }
+      last_capture_frame_ = nullptr;
+    }
   }
 
   void TextureBridge::OnFrameArrived()
   {
-    const std::lock_guard<std::mutex> lock(mutex_);
-    if (!is_running_) {
-      return;
-    }
-
     bool has_frame = false;
+    {
+      const std::lock_guard<std::mutex> lock(mutex_);
+      if (!is_running_) {
+        return;
+      }
 
-    winrt::com_ptr<ABI::Windows::Graphics::Capture::IDirect3D11CaptureFrame>
-      frame;
-    auto hr = frame_pool_->TryGetNextFrame(frame.put());
-    if (SUCCEEDED(hr) && frame) {
-      winrt::com_ptr<
-        ABI::Windows::Graphics::DirectX::Direct3D11::IDirect3DSurface>
-        frame_surface;
+      winrt::com_ptr<ABI::Windows::Graphics::Capture::IDirect3D11CaptureFrame>
+        frame;
+      auto hr = frame_pool_->TryGetNextFrame(frame.put());
+      if (SUCCEEDED(hr) && frame) {
+        winrt::com_ptr<
+          ABI::Windows::Graphics::DirectX::Direct3D11::IDirect3DSurface>
+          frame_surface;
 
-      if (SUCCEEDED(frame->get_Surface(frame_surface.put()))) {
-        last_frame_ =
-          TryGetDXGIInterfaceFromObject<ID3D11Texture2D>(frame_surface);
-        has_frame = !ShouldDropFrame();
+        if (SUCCEEDED(frame->get_Surface(frame_surface.put()))) {
+          auto texture =
+            TryGetDXGIInterfaceFromObject<ID3D11Texture2D>(frame_surface);
+          if (texture) {
+            // Keep the frame itself, not only its texture. A released frame
+            // returns its buffer to the pool, which can then write the next
+            // capture into it while the raster thread is still copying.
+            ReleaseLastFrame();
+            last_capture_frame_ = std::move(frame);
+            last_frame_ = std::move(texture);
+            has_frame = !ShouldDropFrame();
+          }
+        }
+      }
+
+      if (needs_update_) {
+        ABI::Windows::Graphics::SizeInt32 size;
+        capture_item_->get_Size(&size);
+        frame_pool_->Recreate(
+          graphics_context_->device(),
+          static_cast<ABI::Windows::Graphics::DirectX::DirectXPixelFormat>(
+            kPixelFormat),
+          kNumBuffers, size);
+        needs_update_ = false;
       }
     }
 
-    if (needs_update_) {
-      ABI::Windows::Graphics::SizeInt32 size;
-      capture_item_->get_Size(&size);
-      frame_pool_->Recreate(
-        graphics_context_->device(),
-        static_cast<ABI::Windows::Graphics::DirectX::DirectXPixelFormat>(
-          kPixelFormat),
-        kNumBuffers, size);
-      needs_update_ = false;
-    }
-
+    // Outside the lock, so the raster thread's GetSurfaceDescriptor never
+    // waits on the platform thread's notification.
     if (has_frame && frame_available_) {
       frame_available_();
     }
