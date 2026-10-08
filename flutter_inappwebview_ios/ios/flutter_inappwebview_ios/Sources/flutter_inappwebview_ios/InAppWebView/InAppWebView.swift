@@ -244,35 +244,7 @@ public class InAppWebView: WKWebView, UIScrollViewDelegate, WKUIDelegate,
         lastTouchPointTimestamp = Int64(Date().timeIntervalSince1970 * 1000)
         SharedLastTouchPointTimestamp[self] = lastTouchPointTimestamp
         
-        // re-build context menu items for the current webview
-        UIMenuController.shared.menuItems = []
-        if let menu = self.contextMenu {
-            if let menuItems = menu["menuItems"] as? [[String : Any]] {
-                for menuItem in menuItems {
-                    let id = menuItem["id"]!
-                    let title = menuItem["title"] as! String
-                    let targetMethodName = "onContextMenuActionItemClicked-" + String(self.hash) + "-" +
-                                            (id is Int64 ? String(id as! Int64) : id as! String)
-                    if !self.responds(to: Selector(targetMethodName)) {
-                        let customAction: () -> Void = {
-                            self.channelDelegate?.onContextMenuActionItemClicked(id: id, title: title)
-                            if #available(iOS 16.0, *) {
-                                if #unavailable(iOS 16.4) {
-                                    self.onHideContextMenu()
-                                }
-                            }
-                        }
-                        let castedCustomAction: AnyObject = unsafeBitCast(customAction as @convention(block) () -> Void, to: AnyObject.self)
-                        let swizzledImplementation = imp_implementationWithBlock(castedCustomAction)
-                        class_addMethod(InAppWebView.self, Selector(targetMethodName), swizzledImplementation, nil)
-                        self.customIMPs.append(swizzledImplementation)
-                    }
-                    let item = UIMenuItem(title: title, action: Selector(targetMethodName))
-                    UIMenuController.shared.menuItems!.append(item)
-                }
-            }
-        }
-        
+        // Custom context menu items are inserted in buildMenu(with:) via UIAction.
         // https://github.com/pichillilorenzo/flutter_inappwebview/pull/1665
         if preventGestureDelay, let gestures = superview?.superview?.gestureRecognizers {
             for gesture in gestures {
@@ -295,6 +267,21 @@ public class InAppWebView: WKWebView, UIScrollViewDelegate, WKUIDelegate,
                     let _ = contextMenuSettings.parse(settings: contextMenuSettingsMap)
                     if contextMenuSettings.hideDefaultSystemContextMenuItems {
                         builder.remove(menu: .lookup)
+                    }
+                }
+                if let menuItems = menu["menuItems"] as? [[String: Any]] {
+                    var actions: [UIAction] = []
+                    for menuItem in menuItems {
+                        let id = menuItem["id"]!
+                        let title = menuItem["title"] as! String
+                        actions.append(UIAction(title: title) { [weak self] _ in
+                            self?.channelDelegate?.onContextMenuActionItemClicked(id: id, title: title)
+                        })
+                    }
+                    if !actions.isEmpty {
+                        builder.insertChild(
+                            UIMenu(title: "", options: .displayInline, children: actions),
+                            atStartOfMenu: .root)
                     }
                 }
             }
@@ -320,10 +307,7 @@ public class InAppWebView: WKWebView, UIScrollViewDelegate, WKUIDelegate,
     }
     
     public override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
-        var needCheck = sender is UIMenuController
-        if #available(iOS 13.0, *) {
-            needCheck = sender is UIMenuElement || sender is UIMenuController
-        }
+        let needCheck = sender is UIMenuElement
         
         if needCheck {
             if settings?.disableContextMenu == true {
@@ -417,20 +401,6 @@ public class InAppWebView: WKWebView, UIScrollViewDelegate, WKUIDelegate,
                 forKeyPath: #keyPath(WKWebView.microphoneCaptureState),
                 options: [.new, .old],
                 context: nil)
-        }
-        
-        if #unavailable(iOS 16.0) {
-            NotificationCenter.default.addObserver(
-                self,
-                selector: #selector(onCreateContextMenu),
-                name: UIMenuController.willShowMenuNotification,
-                object: nil)
-            
-            NotificationCenter.default.addObserver(
-                self,
-                selector: #selector(onHideContextMenu),
-                name: UIMenuController.didHideMenuNotification,
-                object: nil)
         }
         
         // KVO observer for fullscreenState on iOS 16.0+
@@ -547,7 +517,7 @@ public class InAppWebView: WKWebView, UIScrollViewDelegate, WKUIDelegate,
             }
             
             if settings.clearCache {
-                clearCache()
+                clearWebsiteData()
             }
         }
         
@@ -575,10 +545,7 @@ public class InAppWebView: WKWebView, UIScrollViewDelegate, WKUIDelegate,
                 configuration.defaultWebpagePreferences.preferredContentMode = WKWebpagePreferences.ContentMode(rawValue: settings.preferredContentMode)!
             }
             
-            configuration.preferences.javaScriptEnabled = settings.javaScriptEnabled
-            if #available(iOS 14.0, *) {
-                configuration.defaultWebpagePreferences.allowsContentJavaScript = settings.javaScriptEnabled
-            }
+            configuration.defaultWebpagePreferences.allowsContentJavaScript = settings.javaScriptEnabled
             
             if #available(iOS 15.0, *) {
                 configuration.preferences.isTextInteractionEnabled = settings.isTextInteractionEnabled
@@ -656,12 +623,9 @@ public class InAppWebView: WKWebView, UIScrollViewDelegate, WKUIDelegate,
         let configuration = WKWebViewConfiguration()
         // initialzie WKUserContentController here to fix possible "undefined is not an object (evaluating 'window.webkit.messageHandlers')" javascript error
         configuration.userContentController = WKUserContentController()
-        configuration.processPool = WKProcessPoolManager.sharedProcessPool
-        
         if let settings = settings {
             configuration.allowsInlineMediaPlayback = settings.allowsInlineMediaPlayback
             configuration.suppressesIncrementalRendering = settings.suppressesIncrementalRendering
-            configuration.selectionGranularity = WKSelectionGranularity.init(rawValue: settings.selectionGranularity)!
             
             if settings.allowUniversalAccessFromFileURLs {
                 configuration.setValue(settings.allowUniversalAccessFromFileURLs, forKey: "allowUniversalAccessFromFileURLs")
@@ -742,7 +706,7 @@ public class InAppWebView: WKWebView, UIScrollViewDelegate, WKUIDelegate,
         let hitTestResult = HitTestResult(type: .unknownType, extra: nil)
         
         if let lastLongPressTouhLocation = lastLongPressTouchPoint {
-            if configuration.preferences.javaScriptEnabled {
+            if configuration.defaultWebpagePreferences.allowsContentJavaScript {
                 self.evaluateJavaScript("window.\(JavaScriptBridgeJS.get_JAVASCRIPT_BRIDGE_NAME())._findElementsAtPoint(\(lastLongPressTouhLocation.x),\(lastLongPressTouhLocation.y))", completionHandler: {(value, error) in
                     if error != nil {
                         print("Long press gesture recognizer error: \(error?.localizedDescription ?? "")")
@@ -1233,10 +1197,6 @@ public class InAppWebView: WKWebView, UIScrollViewDelegate, WKUIDelegate,
             configuration.preferences.minimumFontSize = CGFloat(newSettings.minimumFontSize)
         }
         
-        if newSettingsMap["selectionGranularity"] != nil && settings?.selectionGranularity != newSettings.selectionGranularity {
-            configuration.selectionGranularity = WKSelectionGranularity.init(rawValue: newSettings.selectionGranularity)!
-        }
-        
         if #available(iOS 10.0, *) {
             if newSettingsMap["ignoresViewportScaleLimits"] != nil && settings?.ignoresViewportScaleLimits != newSettings.ignoresViewportScaleLimits {
                 configuration.ignoresViewportScaleLimits = newSettings.ignoresViewportScaleLimits
@@ -1331,11 +1291,7 @@ public class InAppWebView: WKWebView, UIScrollViewDelegate, WKUIDelegate,
         }
         
         if newSettingsMap["clearCache"] != nil && newSettings.clearCache {
-            clearCache()
-        }
-        
-        if newSettingsMap["javaScriptEnabled"] != nil && settings?.javaScriptEnabled != newSettings.javaScriptEnabled {
-            configuration.preferences.javaScriptEnabled = newSettings.javaScriptEnabled
+            clearWebsiteData()
         }
         
         if #available(iOS 14.0, *) {
@@ -1458,22 +1414,14 @@ public class InAppWebView: WKWebView, UIScrollViewDelegate, WKUIDelegate,
         }
     }
     
+    public func clearWebsiteData() {
+        let date = Date(timeIntervalSince1970: 0)
+        WKWebsiteDataStore.default().removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: date, completionHandler: { })
+    }
+
     @available(*, deprecated, message: "Use InAppWebViewManager.clearAllCache instead.")
     public func clearCache() {
-        if #available(iOS 9.0, *) {
-            let date = NSDate(timeIntervalSince1970: 0)
-            WKWebsiteDataStore.default().removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: date as Date, completionHandler:{ })
-        } else {
-            var libraryPath = NSSearchPathForDirectoriesInDomains(FileManager.SearchPathDirectory.libraryDirectory, FileManager.SearchPathDomainMask.userDomainMask, false).first!
-            libraryPath += "/Cookies"
-            
-            do {
-                try FileManager.default.removeItem(atPath: libraryPath)
-            } catch {
-                print("can't clear cache")
-            }
-            URLCache.shared.removeAllCachedResponses()
-        }
+        clearWebsiteData()
     }
     
     public func injectDeferredObject(source: String, withWrapper jsWrapper: String?, completionHandler: ((Any?) -> Void)? = nil) {
@@ -3063,7 +3011,7 @@ public class InAppWebView: WKWebView, UIScrollViewDelegate, WKUIDelegate,
                            let numberOfMatches = findResult["numberOfMatches"] as? Int,
                            let isDoneCounting = findResult["isDoneCounting"] as? Bool {
                             webView.findInteractionController?.channelDelegate?.onFindResultReceived(activeMatchOrdinal: activeMatchOrdinal, numberOfMatches: numberOfMatches, isDoneCounting: isDoneCounting)
-                            webView.channelDelegate?.onFindResultReceived(activeMatchOrdinal: activeMatchOrdinal, numberOfMatches: numberOfMatches, isDoneCounting: isDoneCounting)
+                            webView.channelDelegate?.emitFindResult(activeMatchOrdinal: activeMatchOrdinal, numberOfMatches: numberOfMatches, isDoneCounting: isDoneCounting)
                         }
                     }
                     break
@@ -3319,7 +3267,7 @@ if(window.\(JavaScriptBridgeJS.get_JAVASCRIPT_BRIDGE_NAME())[\(_callHandlerID)] 
     }
     
     public func getSelectedText(completionHandler: @escaping (Any?, Error?) -> Void) {
-        if configuration.preferences.javaScriptEnabled {
+        if configuration.defaultWebpagePreferences.allowsContentJavaScript {
             evaluateJavaScript(PluginScriptsUtil.GET_SELECTED_TEXT_JS_SOURCE, completionHandler: completionHandler)
         } else {
             completionHandler(nil, nil)
@@ -3327,7 +3275,7 @@ if(window.\(JavaScriptBridgeJS.get_JAVASCRIPT_BRIDGE_NAME())[\(_callHandlerID)] 
     }
     
     public func getHitTestResult(completionHandler: @escaping (HitTestResult) -> Void) {
-        if configuration.preferences.javaScriptEnabled, let lastTouchLocation = lastTouchPoint {
+        if configuration.defaultWebpagePreferences.allowsContentJavaScript, let lastTouchLocation = lastTouchPoint {
             self.evaluateJavaScript("window.\(JavaScriptBridgeJS.get_JAVASCRIPT_BRIDGE_NAME())._findElementsAtPoint(\(lastTouchLocation.x),\(lastTouchLocation.y))", completionHandler: {(value, error) in
                 if error != nil {
                     print("getHitTestResult error: \(error?.localizedDescription ?? "")")
@@ -3345,7 +3293,7 @@ if(window.\(JavaScriptBridgeJS.get_JAVASCRIPT_BRIDGE_NAME())[\(_callHandlerID)] 
     }
     
     public func requestFocusNodeHref(completionHandler: @escaping ([String: Any?]?, Error?) -> Void) {
-        if configuration.preferences.javaScriptEnabled {
+        if configuration.defaultWebpagePreferences.allowsContentJavaScript {
             // add some delay to make it sure _lastAnchorOrImageTouched is updated
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
                 self.evaluateJavaScript("window.\(JavaScriptBridgeJS.get_JAVASCRIPT_BRIDGE_NAME())._lastAnchorOrImageTouched", completionHandler: {(value, error) in
@@ -3359,7 +3307,7 @@ if(window.\(JavaScriptBridgeJS.get_JAVASCRIPT_BRIDGE_NAME())[\(_callHandlerID)] 
     }
     
     public func requestImageRef(completionHandler: @escaping ([String: Any?]?, Error?) -> Void) {
-        if configuration.preferences.javaScriptEnabled {
+        if configuration.defaultWebpagePreferences.allowsContentJavaScript {
             // add some delay to make it sure _lastImageTouched is updated
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
                 self.evaluateJavaScript("window.\(JavaScriptBridgeJS.get_JAVASCRIPT_BRIDGE_NAME())._lastImageTouched", completionHandler: {(value, error) in

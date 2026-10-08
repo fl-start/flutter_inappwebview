@@ -259,7 +259,7 @@ public class WebViewChannelDelegate: ChannelDelegate {
             }
             break
         case .clearCache:
-            webView?.clearCache()
+            webView?.clearWebsiteData()
             result(true)
             break
         case .scrollTo:
@@ -711,14 +711,18 @@ public class WebViewChannelDelegate: ChannelDelegate {
         }
     }
     
-    @available(*, deprecated, message: "Use FindInteractionChannelDelegate.onFindResultReceived instead.")
-    public func onFindResultReceived(activeMatchOrdinal: Int, numberOfMatches: Int, isDoneCounting: Bool) {
+    func emitFindResult(activeMatchOrdinal: Int, numberOfMatches: Int, isDoneCounting: Bool) {
         let arguments: [String : Any?] = [
             "activeMatchOrdinal": activeMatchOrdinal,
             "numberOfMatches": numberOfMatches,
             "isDoneCounting": isDoneCounting
         ]
         channel?.invokeMethod("onFindResultReceived", arguments: arguments)
+    }
+
+    @available(*, deprecated, message: "Use FindInteractionChannelDelegate.onFindResultReceived instead.")
+    public func onFindResultReceived(activeMatchOrdinal: Int, numberOfMatches: Int, isDoneCounting: Bool) {
+        emitFindResult(activeMatchOrdinal: activeMatchOrdinal, numberOfMatches: numberOfMatches, isDoneCounting: isDoneCounting)
     }
     
     public func onLongPressHitTestResult(hitTestResult: HitTestResult) {

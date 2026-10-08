@@ -150,7 +150,7 @@ public class InAppWebViewSettings: ISettings<InAppWebView> {
                 realSettings["preferredContentMode"] = configuration.defaultWebpagePreferences.preferredContentMode.rawValue
                 realSettings["automaticallyAdjustsScrollIndicatorInsets"] = webView.scrollView.automaticallyAdjustsScrollIndicatorInsets
             }
-            realSettings["selectionGranularity"] = configuration.selectionGranularity.rawValue
+            realSettings["selectionGranularity"] = 0
             if #available(iOS 11.0, *) {
                 realSettings["accessibilityIgnoresInvertColors"] = webView.accessibilityIgnoresInvertColors
                 realSettings["contentInsetAdjustmentBehavior"] = webView.scrollView.contentInsetAdjustmentBehavior.rawValue
@@ -165,7 +165,6 @@ public class InAppWebViewSettings: ISettings<InAppWebView> {
             realSettings["allowUniversalAccessFromFileURLs"] = configuration.value(forKey: "allowUniversalAccessFromFileURLs")
             realSettings["allowFileAccessFromFileURLs"] = configuration.preferences.value(forKey: "allowFileAccessFromFileURLs")
             realSettings["isDirectionalLockEnabled"] = webView.scrollView.isDirectionalLockEnabled
-            realSettings["javaScriptEnabled"] = configuration.preferences.javaScriptEnabled
             if #available(iOS 14.0, *) {
                 realSettings["mediaType"] = webView.mediaType
                 realSettings["pageZoom"] = Float(webView.pageZoom)

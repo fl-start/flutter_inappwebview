@@ -31,11 +31,11 @@ A new Flutter plugin.
 
   s.swift_version = '5.0'
 
-  s.platforms = { :ios => '12.0' }
+  s.platforms = { :ios => '16.0' }
 
   s.default_subspec = 'Core'
 
   s.subspec 'Core' do |core|
-    core.platform = :ios, '12.0'
+    core.platform = :ios, '16.0'
   end
 end

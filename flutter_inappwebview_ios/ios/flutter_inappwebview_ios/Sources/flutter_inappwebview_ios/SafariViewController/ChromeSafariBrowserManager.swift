@@ -98,15 +98,9 @@ public class ChromeSafariBrowserManager: ChannelDelegate {
                 
                 let safari: SafariViewController
                 
-                if #available(iOS 11.0, *) {
-                    let config = SFSafariViewController.Configuration()
-                    safari = SafariViewController(plugin: plugin, id: id, url: absoluteUrl, configuration: config,
-                                                  menuItemList: menuItemList, safariSettings: safariSettings)
-                } else {
-                    // Fallback on earlier versions
-                    safari = SafariViewController(plugin: plugin, id: id, url: absoluteUrl, entersReaderIfAvailable: safariSettings.entersReaderIfAvailable,
-                                                  menuItemList: menuItemList, safariSettings: safariSettings)
-                }
+                let config = SFSafariViewController.Configuration()
+                safari = SafariViewController(plugin: plugin, id: id, url: absoluteUrl, configuration: config,
+                                              menuItemList: menuItemList, safariSettings: safariSettings)
                 
                 safari.prepareSafariBrowser()
                 

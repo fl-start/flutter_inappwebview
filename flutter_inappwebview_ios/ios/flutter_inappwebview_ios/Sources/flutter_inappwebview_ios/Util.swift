@@ -83,7 +83,7 @@ public class Util {
             case "LOOKUP_SUGGESTION":
                 return .lookupSuggestion
             case "SPOTLIGHT_SUGGESTION":
-                return .spotlightSuggestion
+                return .lookupSuggestion
             case "ALL":
                 return .all
             default:
@@ -117,9 +117,6 @@ public class Util {
             }
             if type.contains(.lookupSuggestion) {
                 dataDetectorTypeString.append("LOOKUP_SUGGESTION")
-            }
-            if type.contains(.spotlightSuggestion) {
-                dataDetectorTypeString.append("SPOTLIGHT_SUGGESTION")
             }
         }
         if dataDetectorTypeString.count == 0 {

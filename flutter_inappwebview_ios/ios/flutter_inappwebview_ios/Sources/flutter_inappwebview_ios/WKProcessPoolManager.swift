@@ -9,5 +9,5 @@ import Foundation
 import WebKit
 
 public class WKProcessPoolManager {
-    static let sharedProcessPool = WKProcessPool()
+    // WKProcessPool has had no effect since iOS 15. Kept so existing references compile.
 }

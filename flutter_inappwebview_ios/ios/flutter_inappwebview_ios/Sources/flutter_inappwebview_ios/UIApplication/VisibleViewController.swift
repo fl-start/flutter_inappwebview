@@ -9,8 +9,15 @@ import UIKit
 
 extension UIApplication {
 
+    var foregroundKeyWindow: UIWindow? {
+        connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+            .first { $0.isKeyWindow }
+    }
+
     var visibleViewController: UIViewController? {
-        guard let rootViewController = keyWindow?.rootViewController else {
+        guard let rootViewController = foregroundKeyWindow?.rootViewController else {
             return nil
         }
         return getVisibleViewController(rootViewController)

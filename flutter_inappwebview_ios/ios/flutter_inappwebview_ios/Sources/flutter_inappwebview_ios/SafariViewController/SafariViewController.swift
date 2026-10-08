@@ -32,18 +32,6 @@ public class SafariViewController: SFSafariViewController, SFSafariViewControlle
         self.delegate = self
     }
     
-    public init(plugin: InAppWebViewFlutterPlugin, id: String, url: URL, entersReaderIfAvailable: Bool, menuItemList: [[String: Any]] = [], safariSettings: SafariBrowserSettings) {
-        self.id = id
-        self.plugin = plugin
-        self.menuItemList = menuItemList
-        self.safariSettings = safariSettings
-        super.init(url: url, entersReaderIfAvailable: entersReaderIfAvailable)
-        let channel = FlutterMethodChannel(name: SafariViewController.METHOD_CHANNEL_NAME_PREFIX + id,
-                                           binaryMessenger: plugin.registrar.messenger())
-        self.channelDelegate = SafariViewControllerChannelDelegate(safariViewController: self, channel: channel)
-        self.delegate = self
-    }
-    
     public static func prepareConfig(configuration: SFSafariViewController.Configuration, safariSettings: SafariBrowserSettings) {
         configuration.entersReaderIfAvailable = safariSettings.entersReaderIfAvailable
         configuration.barCollapsingEnabled = safariSettings.barCollapsingEnabled
