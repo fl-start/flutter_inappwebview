@@ -236,6 +236,35 @@ static void custom_scheme_request_context_free(CustomSchemeRequestContext *conte
   g_free(context);
 }
 
+// SCOMM_APPMSG_FETCH_HTTP_STATUS
+// JS fetch() rejects a custom-scheme body unless the response has an HTTP
+// status and a CORS header. webkit_uri_scheme_request_finish() (and a
+// URISchemeResponse left at the default status) still serves top-level
+// navigation, but fetch() fails with TypeError: Load failed. The reader
+// swaps the message with fetch(), so that failure replaces the body with
+// the damaged-copy message.
+static void finish_scheme_request_for_fetch(WebKitURISchemeRequest *request,
+                                            GInputStream *stream,
+                                            gint64 length,
+                                            const gchar *content_type)
+{
+  WebKitURISchemeResponse *response =
+      webkit_uri_scheme_response_new(stream, length);
+  webkit_uri_scheme_response_set_status(response, 200, "OK");
+  webkit_uri_scheme_response_set_content_type(
+      response,
+      (content_type != nullptr && content_type[0] != '\0')
+          ? content_type
+          : "application/octet-stream");
+  SoupMessageHeaders *headers =
+      soup_message_headers_new(SOUP_MESSAGE_HEADERS_RESPONSE);
+  soup_message_headers_append(headers, "Access-Control-Allow-Origin", "*");
+  webkit_uri_scheme_response_set_http_headers(response, headers);
+  soup_message_headers_unref(headers);
+  webkit_uri_scheme_request_finish_with_response(request, response);
+  g_object_unref(response);
+}
+
 static gboolean finish_scheme_from_native_route(WebViewWebKitGTK *instance,
                                                 WebKitURISchemeRequest *request,
                                                 const gchar *uri)
@@ -298,12 +327,9 @@ static gboolean finish_scheme_from_native_route(WebViewWebKitGTK *instance,
 
   GInputStream *stream = g_memory_input_stream_new_from_data(
       content->content, content->content_length, nullptr);
-  WebKitURISchemeResponse *response =
-      webkit_uri_scheme_response_new(stream, content->content_length);
-  webkit_uri_scheme_response_set_content_type(response, content->content_type);
-  webkit_uri_scheme_request_finish_with_response(request, response);
+  finish_scheme_request_for_fetch(request, stream, content->content_length,
+                                  content->content_type);
   g_object_unref(stream);
-  g_object_unref(response);
   g_print("🐧 Scheme request served from native route: %s (%zu bytes, %s)\n",
           path, content->content_length, content->content_type);
   return TRUE;
@@ -380,7 +406,8 @@ static void on_dart_custom_scheme_result(GObject *source_object,
   gpointer copied = g_memdup2(bytes, length);
   GInputStream *stream =
       g_memory_input_stream_new_from_data(copied, length, g_free);
-  webkit_uri_scheme_request_finish(request, stream, (gint64)length, content_type);
+  finish_scheme_request_for_fetch(request, stream, (gint64)length,
+                                  content_type);
   g_object_unref(stream);
   custom_scheme_request_context_free(context);
 }
