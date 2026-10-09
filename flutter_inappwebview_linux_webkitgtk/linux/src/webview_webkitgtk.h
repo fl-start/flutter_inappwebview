@@ -5,6 +5,14 @@
 #include <gtk/gtk.h>
 #include <flutter_linux/flutter_linux.h>
 
+// Native behavior embedders verify at build time instead of patching this
+// package. Bump when any of these change in a way an embedder relies on:
+// the fail-closed network seal, viewId routing of native -> Dart events,
+// the web-process sandbox, or the overlay setBounds / acknowledgment
+// contract. Keep the line in this exact form; build checks parse it.
+// 1: fl-start 85566151 behavior.
+#define SCOMM_LINUX_WEBKITGTK_CONTRACT 1
+
 G_BEGIN_DECLS
 
 // WebKitGTK WebView wrapper

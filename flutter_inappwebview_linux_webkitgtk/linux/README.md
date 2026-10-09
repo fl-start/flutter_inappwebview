@@ -70,3 +70,11 @@ Every native → Dart event that belongs to one view (`onMessage`, `onLoadStart`
 | Shared context | Views that are neither incognito nor network-blocked share one context. Context-wide state (cache model, cookie policy, proxy) is never set from a single view's settings. |
 | Permissions | Everything is denied except geolocation with `geolocationEnabled`. `<a ping>` requests are http(s) and fall to the network seal; WebKitGTK no longer offers a setting for them. |
 | Custom-scheme CORS | `Access-Control-Allow-Origin: *` is sent only to custom-scheme or opaque (`null`) origins, never to `http(s)` pages. |
+
+## Native contract version
+
+`linux/src/webview_webkitgtk.h` defines `SCOMM_LINUX_WEBKITGTK_CONTRACT`. Embedders check it at build time to confirm the pinned tree has the behavior they rely on, instead of patching this package. Bump it in the same commit that changes the network seal, `viewId` event routing, the web-process sandbox, or the overlay `setBounds` / acknowledgment contract, and add a line to the comment above the define.
+
+| Version | Since | Behavior |
+|---------|-------|----------|
+| 1 | `85566151` | Fail-closed network seal, `viewId` on view events, web-process sandbox, `setBounds` acknowledgment |
