@@ -472,8 +472,6 @@ void webview_webkitgtk_apply_flutter_settings_map(WebViewWebKitGTK *instance, Fl
     webkit_settings_set_enable_media_stream(settings, FALSE);
     webkit_settings_set_enable_webaudio(settings, FALSE);
     webkit_settings_set_enable_webgl(settings, FALSE);
-    // <a ping> would POST to a tracker on every link click.
-    webkit_settings_set_enable_hyperlink_auditing(settings, FALSE);
     return;
   }
 
@@ -539,8 +537,6 @@ void webview_webkitgtk_apply_flutter_settings_map(WebViewWebKitGTK *instance, Fl
   webkit_settings_set_enable_media_stream(settings, FALSE);
   webkit_settings_set_enable_webaudio(settings, FALSE);
   webkit_settings_set_enable_webgl(settings, FALSE);
-  // <a ping> would POST to a tracker on every link click.
-  webkit_settings_set_enable_hyperlink_auditing(settings, FALSE);
 }
 
 void webview_webkitgtk_flutter_settings_install_handlers(WebViewWebKitGTK *instance)

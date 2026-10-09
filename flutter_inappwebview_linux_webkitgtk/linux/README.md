@@ -68,5 +68,5 @@ Every native → Dart event that belongs to one view (`onMessage`, `onLoadStart`
 | Navigation policy | If Dart gives no usable `shouldOverrideUrlLoading` answer, the navigation is refused. |
 | Web process sandbox | Enabled on every context when it can start: inside Flatpak, or with `bwrap` on `PATH` outside a snap. Reported as `webProcessSandbox` in native health. WebKit aborts if it cannot launch the sandbox, so test new targets; `WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1` is WebKit's own escape hatch. |
 | Shared context | Views that are neither incognito nor network-blocked share one context. Context-wide state (cache model, cookie policy, proxy) is never set from a single view's settings. |
-| Permissions | Everything is denied except geolocation with `geolocationEnabled`. Hyperlink auditing (`<a ping>`) is off. |
+| Permissions | Everything is denied except geolocation with `geolocationEnabled`. `<a ping>` requests are http(s) and fall to the network seal; WebKitGTK no longer offers a setting for them. |
 | Custom-scheme CORS | `Access-Control-Allow-Origin: *` is sent only to custom-scheme or opaque (`null`) origins, never to `http(s)` pages. |
