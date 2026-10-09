@@ -63,6 +63,21 @@ void main() {
     expect(received, isEmpty);
   });
 
+  test('local mail navigation without a handler is allowed', () async {
+    final shell = await nativeCall('shouldOverrideUrlLoading', {
+      'viewId': 99,
+      'url': 'appmsg://local/m/token/viewer/shell.html',
+    });
+    final about = await nativeCall('shouldOverrideUrlLoading', {
+      'viewId': 99,
+      'url': 'about:blank',
+    });
+
+    expect(shell, 1);
+    expect(about, 1);
+    expect(received, isEmpty);
+  });
+
   test('message from a view without a handler rejects its promise', () async {
     final result = await nativeCall('onMessage', {
       'viewId': 99,

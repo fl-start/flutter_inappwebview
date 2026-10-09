@@ -281,8 +281,9 @@ static void finish_scheme_request_for_fetch(WebKitURISchemeRequest *request,
     SoupMessageHeaders *headers =
         soup_message_headers_new(SOUP_MESSAGE_HEADERS_RESPONSE);
     soup_message_headers_append(headers, "Access-Control-Allow-Origin", "*");
+    // set_http_headers takes ownership (transfer full). Unref here frees the
+    // headers WebKit still iterates and SIGSEGVs in soup_message_headers_iter_next.
     webkit_uri_scheme_response_set_http_headers(response, headers);
-    soup_message_headers_unref(headers);
   }
   webkit_uri_scheme_request_finish_with_response(request, response);
   g_object_unref(response);
@@ -511,6 +512,12 @@ WebViewWebKitGTK *webview_webkitgtk_new(
   instance->script_handlers = g_hash_table_new_full(
       g_str_hash, g_str_equal, g_free, script_handler_user_data_free);
 
+  // Register appmsg before the first WebView on this context. WebKit rejects
+  // webkit_web_context_register_uri_scheme once a view exists, which leaves
+  // appmsg:// loads with no handler (blank reader).
+  webview_webkitgtk_register_custom_schemes_from_settings(
+      instance, settings_map_or_null);
+
   // Attach user_content_manager and web_context to the WebView via construct
   // properties. WebKitGTK 4.1 removed the standalone setter functions;
   // context and user-content-manager must be supplied at construction time.
@@ -538,10 +545,6 @@ WebViewWebKitGTK *webview_webkitgtk_new(
   webview_webkitgtk_register_message_handler(instance, "openExternalUrl");
 
   register_webkit_instance(instance);
-
-  // Always register appmsg://; also honor resourceCustomSchemes from Flutter.
-  webview_webkitgtk_register_custom_schemes_from_settings(
-      instance, settings_map_or_null);
 
   g_print("🐧 WebKitGTK WebView created (view_id: %ld)\n", view_id);
 

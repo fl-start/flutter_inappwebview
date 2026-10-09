@@ -362,6 +362,19 @@ namespace
       return TRUE;
     }
 
+    // SCOMM_LOCAL_MAIL_NAV_ALLOW
+    // appmsg:// and about: are local documents. Waiting for Dart here blanks
+    // the reader: a missing view handler, a channel error, or a busy UI
+    // isolate is mapped to policy 0 (ignore), so the shell never commits and
+    // the overlay stays white. Remote http(s) still goes through Dart.
+    if (decision_type == WEBKIT_POLICY_DECISION_TYPE_NAVIGATION_ACTION &&
+        (g_ascii_strncasecmp(uri, "appmsg:", 7) == 0 ||
+         g_ascii_strncasecmp(uri, "about:", 6) == 0))
+    {
+      webkit_policy_decision_use(decision);
+      return TRUE;
+    }
+
     if (decision_type == WEBKIT_POLICY_DECISION_TYPE_NAVIGATION_ACTION &&
         inst->method_channel)
     {

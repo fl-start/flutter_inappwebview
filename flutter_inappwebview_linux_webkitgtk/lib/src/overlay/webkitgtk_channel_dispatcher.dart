@@ -137,6 +137,10 @@ class WebKitGtkChannelDispatcher {
   static dynamic _unroutedViewEvent(MethodCall call, int viewId) {
     switch (call.method) {
       case 'shouldOverrideUrlLoading':
+        // Local mail documents must still commit when the view handler is
+        // missing (keep-alive gap, dispose race). Cancelling them leaves the
+        // reader on about:blank. Remote URLs stay cancelled.
+        if (_isLocalMailNavigation(_urlFrom(call))) return 1;
         return _navigationCancel;
       case 'onMessage':
         // Reject with the message id so the page's callHandler promise
@@ -148,6 +152,22 @@ class WebKitGtkChannelDispatcher {
       default:
         return null;
     }
+  }
+
+  static String? _urlFrom(MethodCall call) {
+    final args = call.arguments;
+    if (args is Map) {
+      final raw = args['url'];
+      if (raw is String) return raw;
+    }
+    return null;
+  }
+
+  /// `appmsg:` mail content and `about:` documents (blank / srcdoc).
+  static bool _isLocalMailNavigation(String? url) {
+    if (url == null || url.isEmpty) return false;
+    final lower = url.toLowerCase();
+    return lower.startsWith('appmsg:') || lower.startsWith('about:');
   }
 
   static dynamic _bridgeMessageId(dynamic arguments) {
