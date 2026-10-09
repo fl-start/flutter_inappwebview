@@ -16,6 +16,7 @@ class WebKitGtkNativeHealth {
     this.flViewRealized,
     this.overlayCount,
     this.webkitDisableCompositing,
+    this.webProcessSandbox,
     this.reason,
     this.warning,
     this.lastError,
@@ -36,6 +37,10 @@ class WebKitGtkNativeHealth {
   final bool? flViewRealized;
   final int? overlayCount;
   final String? webkitDisableCompositing;
+
+  /// `enabled`, or why WebKit's web-process sandbox is off
+  /// (`unavailable_no_bwrap`, `unavailable_snap`).
+  final String? webProcessSandbox;
   final String? reason;
   final String? warning;
   final String? lastError;
@@ -98,6 +103,9 @@ class WebKitGtkNativeHealth {
       webkitDisableCompositing: map['webkitDisableCompositing'] == null
           ? null
           : asString(map['webkitDisableCompositing']),
+      webProcessSandbox: map['webProcessSandbox'] == null
+          ? null
+          : asString(map['webProcessSandbox']),
       reason: map['reason'] == null ? null : asString(map['reason']),
       warning: map['warning'] == null ? null : asString(map['warning']),
       lastError: map['lastError'] == null ? null : asString(map['lastError']),
@@ -122,6 +130,7 @@ class WebKitGtkNativeHealth {
         if (overlayCount != null) 'overlayCount': overlayCount,
         if (webkitDisableCompositing != null)
           'webkitDisableCompositing': webkitDisableCompositing,
+        if (webProcessSandbox != null) 'webProcessSandbox': webProcessSandbox,
         if (reason != null) 'reason': reason,
         if (warning != null) 'warning': warning,
         if (lastError != null) 'lastError': lastError,
@@ -144,6 +153,9 @@ class WebKitGtkNativeHealth {
     }
     if (webkitDisableCompositing != null) {
       lines.add('WEBKIT_DISABLE_COMPOSITING_MODE: $webkitDisableCompositing');
+    }
+    if (webProcessSandbox != null) {
+      lines.add('web process sandbox: $webProcessSandbox');
     }
     if (reason != null && reason!.isNotEmpty) lines.add('reason: $reason');
     if (warning != null && warning!.isNotEmpty) lines.add('warning: $warning');

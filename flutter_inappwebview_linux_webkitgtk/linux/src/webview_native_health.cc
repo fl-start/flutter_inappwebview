@@ -1,4 +1,5 @@
 #include "webview_native_health.h"
+#include "webview_webkitgtk.h"
 
 #include <gdk/gdk.h>
 #include <gtk/gtk.h>
@@ -82,6 +83,7 @@ void webview_native_health_fill_runtime(FlValue *map)
   set_string(map, "gtkVersion", gtk_ver);
   set_string(map, "soupMajor", soup_ver);
   set_string(map, "webkitApi", "webkit2gtk-4.1");
+  set_string(map, "webProcessSandbox", webview_webkitgtk_sandbox_status());
 
   const gchar *compositing = g_getenv("WEBKIT_DISABLE_COMPOSITING_MODE");
   set_string(map, "webkitDisableCompositing",

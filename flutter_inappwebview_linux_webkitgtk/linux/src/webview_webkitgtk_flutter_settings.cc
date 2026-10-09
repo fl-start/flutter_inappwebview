@@ -201,6 +201,8 @@ namespace
         inst->method_channel)
     {
       g_autoptr(FlValue) args = fl_value_new_map();
+      fl_value_set_string_take(args, "viewId",
+                               fl_value_new_int((int64_t)inst->view_id));
       fl_value_set_string_take(args, "url", fl_value_new_string(uri));
       auto *context = new NavigationDecisionContext{
           WEBKIT_POLICY_DECISION(g_object_ref(decision))};
@@ -257,12 +259,17 @@ WebKitWebContext *webview_webkitgtk_create_context_from_flutter_settings(
     WebKitWebsiteDataManager *dm = webkit_website_data_manager_new_ephemeral();
     ctx = webkit_web_context_new_with_website_data_manager(dm);
     g_object_unref(dm);
+    webview_webkitgtk_configure_context_sandbox(ctx);
+  }
+  else if (shared_context)
+  {
+    // The plugin configured the shared context's sandbox when it created it.
+    ctx = WEBKIT_WEB_CONTEXT(g_object_ref(shared_context));
   }
   else
   {
-    ctx = shared_context
-              ? WEBKIT_WEB_CONTEXT(g_object_ref(shared_context))
-              : webkit_web_context_new();
+    ctx = webkit_web_context_new();
+    webview_webkitgtk_configure_context_sandbox(ctx);
   }
 
   apply_context_level_from_map(ctx, map);

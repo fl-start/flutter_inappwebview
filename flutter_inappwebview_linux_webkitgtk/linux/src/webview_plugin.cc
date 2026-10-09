@@ -146,6 +146,7 @@ static void webview_plugin_init(WebViewPlugin *self)
   self->method_channel = nullptr;
   self->registrar = nullptr;
   self->shared_web_context = webkit_web_context_new();
+  webview_webkitgtk_configure_context_sandbox(self->shared_web_context);
   // Create hash table for overlay windows (key: gint64 as gpointer, value: WebViewOverlayWindow*)
   self->overlay_windows = g_hash_table_new_full(
       platform_view_hash, // Reusing hash/equal functions (they work for gint64 keys)

@@ -39,6 +39,13 @@ struct _WebViewWebKitGTK
     gdouble zoom_level_after_load;
 };
 
+// Confine the context's web processes in WebKit's bubblewrap sandbox when the
+// host can launch it. Must run before the context spawns its first web process.
+void webview_webkitgtk_configure_context_sandbox(WebKitWebContext *context);
+
+// "enabled", "unavailable_no_bwrap", "unavailable_snap", or "unset".
+const gchar *webview_webkitgtk_sandbox_status(void);
+
 // Create a new WebKitGTK WebView instance
 // [settings_map_or_null] optional Flutter Standard map (bools/ints); may be null.
 WebViewWebKitGTK *webview_webkitgtk_new(

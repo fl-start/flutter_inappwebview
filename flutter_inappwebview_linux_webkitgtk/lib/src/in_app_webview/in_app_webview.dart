@@ -224,8 +224,10 @@ class _LinuxInAppWebViewHostState extends State<_LinuxInAppWebViewHost> {
         }
         return response?.toMap();
       },
+      // The returned {id, result|error} JSON settles the page's callHandler
+      // promise; without it native replies {"id":null} and the promise hangs.
       onMessage: (name, payload) async {
-        await _controller?.dispatchJavaScriptMessage(name, payload);
+        return _controller?.dispatchJavaScriptMessage(name, payload);
       },
       onWebViewCreated: (native) {
         _controller = LinuxWebKitGtkInAppWebViewController(

@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/services.dart';
 
 import 'webkitgtk_custom_scheme.dart';
@@ -17,6 +19,20 @@ class WebKitGtkChannelDispatcher {
 
   static Future<dynamic> Function(MethodCall)? _fallbackHandler;
   static bool _installed = false;
+
+  /// Events native tags with the sending view's id. When that view has no
+  /// handler (disposed, or parked in the keep-alive pool) no other view may
+  /// answer: a peer would apply its own navigation policy and JS handlers.
+  static const Set<String> _viewScopedMethods = {
+    'onLoadStart',
+    'onLoadStop',
+    'onLoadError',
+    'shouldOverrideUrlLoading',
+    'onMessage',
+  };
+
+  /// [NavigationActionPolicy.CANCEL] on the wire.
+  static const int _navigationCancel = 0;
 
   static void ensureInstalled() {
     if (_installed) return;
@@ -84,6 +100,10 @@ class WebKitGtkChannelDispatcher {
       }
     }
 
+    if (viewId != null && _viewScopedMethods.contains(call.method)) {
+      return _unroutedViewEvent(call, viewId);
+    }
+
     if (call.method == 'onLoadResourceWithCustomScheme') {
       for (final entry in _viewHandlers.entries) {
         if (entry.key == viewId) continue;
@@ -95,8 +115,8 @@ class WebKitGtkChannelDispatcher {
       if (global != null) return global;
     }
 
-    // Broadcast load/message events that omit viewId to every view handler,
-    // then the legacy fallback.
+    // Events that omit viewId (separate-window callbacks, older native
+    // builds) go to the only view, then the legacy fallback.
     if (_viewHandlers.length == 1) {
       return _viewHandlers.values.first(call);
     }
@@ -111,5 +131,34 @@ class WebKitGtkChannelDispatcher {
     }
 
     return null;
+  }
+
+  /// Fail-closed answer for a view-scoped event whose view has no handler.
+  static dynamic _unroutedViewEvent(MethodCall call, int viewId) {
+    switch (call.method) {
+      case 'shouldOverrideUrlLoading':
+        return _navigationCancel;
+      case 'onMessage':
+        // Reject with the message id so the page's callHandler promise
+        // settles instead of waiting forever.
+        return jsonEncode({
+          'id': _bridgeMessageId(call.arguments),
+          'error': 'No JavaScript handler for view $viewId',
+        });
+      default:
+        return null;
+    }
+  }
+
+  static dynamic _bridgeMessageId(dynamic arguments) {
+    if (arguments is! Map) return null;
+    final payload = arguments['payload'];
+    if (payload is! String) return null;
+    try {
+      final decoded = jsonDecode(payload);
+      return decoded is Map ? decoded['id'] : null;
+    } catch (_) {
+      return null;
+    }
   }
 }

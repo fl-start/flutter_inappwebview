@@ -16,9 +16,10 @@ typedef struct _ScriptHandlerUserData
   gchar *handler_name;
 } ScriptHandlerUserData;
 
-// Shared WebKitWebContext: URI schemes can only be registered once per context.
-// Map each WebKitWebView back to its wrapper so scheme callbacks attribute the
-// correct viewId (compose vs reader) even when registration userdata is stale.
+// Shared WebKitWebContext: URI schemes can only be registered once per context,
+// so the registration cannot carry a wrapper pointer (the first view to
+// register may be destroyed long before the context). Map each WebKitWebView
+// back to its live wrapper instead; a destroyed view is absent from the table.
 static GHashTable *g_webkit_instances_by_view = nullptr;
 
 static void ensure_webkit_instance_table(void)
@@ -45,22 +46,12 @@ static void unregister_webkit_instance(WebViewWebKitGTK *instance)
   g_hash_table_remove(g_webkit_instances_by_view, instance->web_view);
 }
 
-static WebViewWebKitGTK *instance_for_scheme_request(
-    WebKitURISchemeRequest *request,
-    gpointer registration_userdata)
+static WebViewWebKitGTK *instance_for_web_view(WebKitWebView *web_view)
 {
-  if (request != nullptr)
-  {
-    WebKitWebView *web_view = webkit_uri_scheme_request_get_web_view(request);
-    if (web_view != nullptr && g_webkit_instances_by_view != nullptr)
-    {
-      WebViewWebKitGTK *found = static_cast<WebViewWebKitGTK *>(
-          g_hash_table_lookup(g_webkit_instances_by_view, web_view));
-      if (found != nullptr)
-        return found;
-    }
-  }
-  return static_cast<WebViewWebKitGTK *>(registration_userdata);
+  if (web_view == nullptr || g_webkit_instances_by_view == nullptr)
+    return nullptr;
+  return static_cast<WebViewWebKitGTK *>(
+      g_hash_table_lookup(g_webkit_instances_by_view, web_view));
 }
 
 static void script_handler_user_data_free(gpointer data)
@@ -175,6 +166,8 @@ static void webview_webkitgtk_send_on_message(
   }
 
   g_autoptr(FlValue) args = fl_value_new_map();
+  fl_value_set_string_take(args, "viewId",
+                           fl_value_new_int((int64_t)instance->view_id));
   fl_value_set_string_take(args, "name", fl_value_new_string(handler_name));
   fl_value_set_string_take(
       args, "payload", fl_value_new_string(payload ? payload : ""));
@@ -221,10 +214,12 @@ static void scheme_content_free(gpointer data)
   }
 }
 
+// Holds the WebKitWebView, not the wrapper: the view can be destroyed while
+// Dart is still answering, so the wrapper is looked up again on completion.
 typedef struct _CustomSchemeRequestContext
 {
   WebKitURISchemeRequest *request;
-  WebViewWebKitGTK *instance;
+  WebKitWebView *web_view;
 } CustomSchemeRequestContext;
 
 static void custom_scheme_request_context_free(CustomSchemeRequestContext *context)
@@ -233,6 +228,8 @@ static void custom_scheme_request_context_free(CustomSchemeRequestContext *conte
     return;
   if (context->request)
     g_object_unref(context->request);
+  if (context->web_view)
+    g_object_unref(context->web_view);
   g_free(context);
 }
 
@@ -346,7 +343,9 @@ static void on_dart_custom_scheme_result(GObject *source_object,
       FL_METHOD_CHANNEL(source_object), result, &error);
 
   WebKitURISchemeRequest *request = context->request;
-  WebViewWebKitGTK *instance = context->instance;
+  // nullptr once the view is destroyed; finish_scheme_from_native_route then
+  // declines and the request finishes with an error.
+  WebViewWebKitGTK *instance = instance_for_web_view(context->web_view);
 
   if (error || !FL_IS_METHOD_SUCCESS_RESPONSE(response))
   {
@@ -410,6 +409,49 @@ static void on_dart_custom_scheme_result(GObject *source_object,
                                   content_type);
   g_object_unref(stream);
   custom_scheme_request_context_free(context);
+}
+
+static const gchar *g_sandbox_status = "unset";
+
+// The 4.1 API leaves the web-process sandbox off, so hostile page content
+// would run with the whole app's permissions. WebKit aborts if it cannot
+// launch the sandbox, so only turn it on where it can start: inside Flatpak
+// (WebKit uses the Flatpak portal's sub-sandbox) or when bwrap is installed.
+// Snap confinement blocks bwrap's user namespaces.
+void webview_webkitgtk_configure_context_sandbox(WebKitWebContext *context)
+{
+  if (!context)
+    return;
+
+  if (g_file_test("/.flatpak-info", G_FILE_TEST_EXISTS))
+  {
+    g_sandbox_status = "enabled";
+  }
+  else if (g_getenv("SNAP") != nullptr)
+  {
+    g_sandbox_status = "unavailable_snap";
+  }
+  else
+  {
+    g_autofree gchar *bwrap = g_find_program_in_path("bwrap");
+    g_sandbox_status = bwrap ? "enabled" : "unavailable_no_bwrap";
+  }
+
+  if (g_strcmp0(g_sandbox_status, "enabled") == 0)
+  {
+    webkit_web_context_set_sandbox_enabled(context, TRUE);
+  }
+  else
+  {
+    g_warning("Scomm WebKitGTK: web process sandbox disabled (%s); page "
+              "content runs with the app's permissions",
+              g_sandbox_status);
+  }
+}
+
+const gchar *webview_webkitgtk_sandbox_status(void)
+{
+  return g_sandbox_status;
 }
 
 // Create a new WebKitGTK WebView instance
@@ -747,15 +789,19 @@ gchar *webview_webkitgtk_get_current_url(WebViewWebKitGTK *instance)
 static void custom_scheme_request_callback(WebKitURISchemeRequest *request,
                                            gpointer user_data)
 {
-  WebViewWebKitGTK *instance =
-      instance_for_scheme_request(request, user_data);
+  (void)user_data;
+  if (!request)
+    return;
 
-  if (!instance || !request)
+  WebKitWebView *web_view = webkit_uri_scheme_request_get_web_view(request);
+  WebViewWebKitGTK *instance = instance_for_web_view(web_view);
+
+  if (!instance)
   {
-    g_warning("🐧 Scheme request callback: Invalid instance");
-    webkit_uri_scheme_request_finish_error(
-        request, g_error_new_literal(G_IO_ERROR, G_IO_ERROR_FAILED,
-                                     "Internal error"));
+    g_warning("🐧 Scheme request callback: no live view for request");
+    g_autoptr(GError) error = g_error_new_literal(
+        G_IO_ERROR, G_IO_ERROR_FAILED, "Internal error");
+    webkit_uri_scheme_request_finish_error(request, error);
     return;
   }
 
@@ -767,9 +813,9 @@ static void custom_scheme_request_callback(WebKitURISchemeRequest *request,
   {
     if (!finish_scheme_from_native_route(instance, request, uri))
     {
-      webkit_uri_scheme_request_finish_error(
-          request, g_error_new_literal(G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
-                                       "Route not found"));
+      g_autoptr(GError) error = g_error_new_literal(
+          G_IO_ERROR, G_IO_ERROR_NOT_FOUND, "Route not found");
+      webkit_uri_scheme_request_finish_error(request, error);
     }
     return;
   }
@@ -813,7 +859,7 @@ static void custom_scheme_request_callback(WebKitURISchemeRequest *request,
 
   CustomSchemeRequestContext *context = g_new0(CustomSchemeRequestContext, 1);
   context->request = WEBKIT_URI_SCHEME_REQUEST(g_object_ref(request));
-  context->instance = instance;
+  context->web_view = WEBKIT_WEB_VIEW(g_object_ref(web_view));
 
   fl_method_channel_invoke_method(
       instance->method_channel, "onLoadResourceWithCustomScheme", args,
@@ -839,8 +885,8 @@ void webview_webkitgtk_register_custom_scheme(
     return;
   }
 
-  // Shared contexts may only register a given scheme once. Subsequent views
-  // rely on instance_for_scheme_request() to resolve the correct wrapper.
+  // Shared contexts may only register a given scheme once. Every request
+  // resolves its wrapper through instance_for_web_view().
   g_autofree gchar *marker_key =
       g_strdup_printf("scomm-uri-scheme-registered-%s", scheme);
   if (g_object_get_data(G_OBJECT(instance->web_context), marker_key) != nullptr)
@@ -857,7 +903,7 @@ void webview_webkitgtk_register_custom_scheme(
       instance->web_context,
       scheme,
       custom_scheme_request_callback,
-      instance,
+      nullptr,
       nullptr);
 
   g_object_set_data(G_OBJECT(instance->web_context), marker_key,
@@ -1045,6 +1091,8 @@ static void on_load_changed(WebKitWebView *web_view,
     const gchar *uri = webkit_web_view_get_uri(web_view);
     const gchar *url = uri ? uri : "";
     g_autoptr(FlValue) args = fl_value_new_map();
+    fl_value_set_string_take(args, "viewId",
+                             fl_value_new_int((int64_t)instance->view_id));
     fl_value_set_string_take(args, "url", fl_value_new_string(url));
     fl_method_channel_invoke_method(
         instance->method_channel, "onLoadStart", args, nullptr, nullptr, nullptr);
@@ -1059,6 +1107,8 @@ static void on_load_changed(WebKitWebView *web_view,
     const gchar *url = uri ? uri : "";
     webkit_web_view_set_zoom_level(web_view, instance->zoom_level_after_load);
     g_autoptr(FlValue) args2 = fl_value_new_map();
+    fl_value_set_string_take(args2, "viewId",
+                             fl_value_new_int((int64_t)instance->view_id));
     fl_value_set_string_take(args2, "url", fl_value_new_string(url));
     fl_method_channel_invoke_method(
         instance->method_channel, "onLoadStop", args2, nullptr, nullptr, nullptr);
@@ -1100,6 +1150,8 @@ static void on_load_failed(WebKitWebView *web_view,
 
   const gchar *url = failing_uri ? failing_uri : "";
   g_autoptr(FlValue) args = fl_value_new_map();
+  fl_value_set_string_take(args, "viewId",
+                           fl_value_new_int((int64_t)instance->view_id));
   fl_value_set_string_take(args, "url", fl_value_new_string(url));
   fl_value_set_string_take(args, "code", fl_value_new_int(error_code));
   fl_value_set_string_take(
