@@ -2,7 +2,6 @@ import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview_linux_webkitgtk/src/overlay/webkitgtk_custom_scheme.dart';
 import 'package:flutter_inappwebview_platform_interface/flutter_inappwebview_platform_interface.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'dart:typed_data';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
