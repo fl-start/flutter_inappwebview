@@ -6,8 +6,9 @@ set(PLUGIN_NAME "flutter_inappwebview_linux_webkitgtk_plugin")
 find_package(PkgConfig REQUIRED)
 
 pkg_check_modules(GTK IMPORTED_TARGET gtk+-3.0)
-pkg_check_modules(WEBKIT2GTK IMPORTED_TARGET webkit2gtk-4.1)
-pkg_check_modules(JAVASCRIPTCORE IMPORTED_TARGET javascriptcoregtk-4.1)
+# 2.40: webkit_web_view_evaluate_javascript and the 4.1 JSC result API.
+pkg_check_modules(WEBKIT2GTK IMPORTED_TARGET webkit2gtk-4.1>=2.40)
+pkg_check_modules(JAVASCRIPTCORE IMPORTED_TARGET javascriptcoregtk-4.1>=2.40)
 pkg_check_modules(LIBSOUP IMPORTED_TARGET libsoup-3.0)
 
 set(_scomm_linux_webkitgtk_missing "")
@@ -15,10 +16,10 @@ if(NOT GTK_FOUND)
   list(APPEND _scomm_linux_webkitgtk_missing "gtk+-3.0")
 endif()
 if(NOT WEBKIT2GTK_FOUND)
-  list(APPEND _scomm_linux_webkitgtk_missing "webkit2gtk-4.1")
+  list(APPEND _scomm_linux_webkitgtk_missing "webkit2gtk-4.1 >= 2.40")
 endif()
 if(NOT JAVASCRIPTCORE_FOUND)
-  list(APPEND _scomm_linux_webkitgtk_missing "javascriptcoregtk-4.1")
+  list(APPEND _scomm_linux_webkitgtk_missing "javascriptcoregtk-4.1 >= 2.40")
 endif()
 if(NOT LIBSOUP_FOUND)
   list(APPEND _scomm_linux_webkitgtk_missing "libsoup-3.0")
@@ -29,8 +30,8 @@ if(_scomm_linux_webkitgtk_missing)
   message(FATAL_ERROR
     "Scomm Linux WebKitGTK backend requires:\n"
     "  gtk+-3.0\n"
-    "  webkit2gtk-4.1\n"
-    "  javascriptcoregtk-4.1\n"
+    "  webkit2gtk-4.1 >= 2.40\n"
+    "  javascriptcoregtk-4.1 >= 2.40\n"
     "  libsoup-3.0\n"
     "\n"
     "WebKitGTK 4.0 / libsoup 2 are no longer supported.\n"

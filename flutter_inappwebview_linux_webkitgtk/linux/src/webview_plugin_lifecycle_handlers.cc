@@ -17,7 +17,8 @@ static FlMethodResponse *webview_error_with_reason(const gchar *code,
 {
   webview_native_health_set_last_error(reason);
   g_warning("Scomm WebKitGTK %s: %s (%s)", code, message, reason ? reason : "");
-  FlValue *details = fl_value_new_map();
+  // Responses take their own reference on the value.
+  g_autoptr(FlValue) details = fl_value_new_map();
   webview_native_health_fill_runtime(details);
   if (reason)
   {
@@ -73,8 +74,10 @@ bool webview_plugin_try_handle_lifecycle_method(
         "Scomm WebKitGTK getNativeHealth: viewId=%ld overlays=%u",
         (long)view_id,
         overlay_windows ? g_hash_table_size(overlay_windows) : 0u);
-    *out_response = FL_METHOD_RESPONSE(fl_method_success_response_new(
-        webview_native_health_snapshot(overlay_windows, view_id)));
+    g_autoptr(FlValue) snapshot =
+        webview_native_health_snapshot(overlay_windows, view_id);
+    *out_response =
+        FL_METHOD_RESPONSE(fl_method_success_response_new(snapshot));
     return true;
   }
 
@@ -146,7 +149,7 @@ bool webview_plugin_try_handle_lifecycle_method(
           overlay_window->webkit_view, user_scripts);
     }
 
-    FlValue *health = webview_native_health_from_overlay(overlay_window);
+    g_autoptr(FlValue) health = webview_native_health_from_overlay(overlay_window);
     fl_value_set_string_take(
         health, "overlayCount",
         fl_value_new_int((gint64)g_hash_table_size(overlay_windows)));
@@ -219,8 +222,8 @@ bool webview_plugin_try_handle_lifecycle_method(
     }
 
     g_hash_table_insert(overlay_windows, view_id_key, overlay_window);
-    *out_response = FL_METHOD_RESPONSE(fl_method_success_response_new(
-        webview_native_health_from_overlay(overlay_window)));
+    g_autoptr(FlValue) health = webview_native_health_from_overlay(overlay_window);
+    *out_response = FL_METHOD_RESPONSE(fl_method_success_response_new(health));
 
     return true;
   }
@@ -387,7 +390,7 @@ bool webview_plugin_try_handle_lifecycle_method(
     if (x == 0 && y == 0)
       gtk_window_get_position(win, &x, &y);
 
-    FlValue *result = fl_value_new_map();
+    g_autoptr(FlValue) result = fl_value_new_map();
     fl_value_set_string_take(result, "x", fl_value_new_int(x));
     fl_value_set_string_take(result, "y", fl_value_new_int(y));
     fl_value_set_string_take(result, "width", fl_value_new_int(w));
@@ -583,7 +586,7 @@ bool webview_plugin_try_handle_lifecycle_method(
             webview_overlay_window_hide(overlay_window);
           }
 
-          FlValue *ack = fl_value_new_map();
+          g_autoptr(FlValue) ack = fl_value_new_map();
           fl_value_set_string_take(ack, "applied", fl_value_new_bool(applied));
           fl_value_set_string_take(ack, "seq", fl_value_new_int(sequence));
           fl_value_set_string_take(ack, "x", fl_value_new_int(overlay_window->x));

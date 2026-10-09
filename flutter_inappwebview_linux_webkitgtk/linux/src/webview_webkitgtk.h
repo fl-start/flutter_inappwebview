@@ -39,6 +39,10 @@ struct _WebViewWebKitGTK
     gdouble zoom_level_after_load;
 };
 
+// GObject data key marking the plugin's shared WebKitWebContext. Views on it
+// never change context-wide state (cache model, cookie policy, proxy).
+#define WEBVIEW_WEBKITGTK_SHARED_CONTEXT_KEY "scomm-shared-context"
+
 // Confine the context's web processes in WebKit's bubblewrap sandbox when the
 // host can launch it. Must run before the context spawns its first web process.
 void webview_webkitgtk_configure_context_sandbox(WebKitWebContext *context);

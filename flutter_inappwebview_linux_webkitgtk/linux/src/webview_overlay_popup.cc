@@ -167,7 +167,13 @@ gboolean webview_overlay_on_window_key_press_event(GtkWidget *widget,
     return FALSE;
 
   emit_raw_key_event(instance, key, ctrl, shift, alt, meta);
-  return TRUE;
+
+  // Shortcuts still reach Dart, but a plain printable key must also reach
+  // WebKit or nothing can be typed into the page. Named keys and
+  // Ctrl/Alt/Super chords stay consumed as shortcuts.
+  const gboolean printable = gdk_keyval_to_unicode(event->keyval) != 0 &&
+                             !g_unichar_iscntrl(gdk_keyval_to_unicode(event->keyval));
+  return !(printable && !ctrl && !alt && !meta);
 }
 
 void webview_overlay_window_position_next_to_main(

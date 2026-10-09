@@ -125,8 +125,18 @@ static void on_dart_message_result(GObject *source_object,
   else
     error_message = "JavaScript handler failed";
 
-  g_autofree gchar *escaped_json = g_strescape(json, nullptr);
-  g_autofree gchar *escaped_error = error_message ? g_strescape(error_message, nullptr) : nullptr;
+  // g_strescape turns bytes >= 0x80 into octal escapes, which JS decodes as
+  // Latin-1 code units, so non-ASCII results arrived garbled. Pass UTF-8
+  // through; JS string literals accept it (including U+2028/U+2029).
+  static gchar utf8_bytes[129];
+  if (utf8_bytes[0] == '\0')
+  {
+    for (int i = 0; i < 128; i++)
+      utf8_bytes[i] = (gchar)(0x80 + i);
+  }
+  g_autofree gchar *escaped_json = g_strescape(json, utf8_bytes);
+  g_autofree gchar *escaped_error =
+      error_message ? g_strescape(error_message, utf8_bytes) : nullptr;
   g_autofree gchar *script = g_strdup_printf(
       "window.flutter_inappwebview&&window.flutter_inappwebview._complete(\"%s\",%s%s%s);",
       escaped_json,
@@ -253,11 +263,27 @@ static void finish_scheme_request_for_fetch(WebKitURISchemeRequest *request,
       (content_type != nullptr && content_type[0] != '\0')
           ? content_type
           : "application/octet-stream");
-  SoupMessageHeaders *headers =
-      soup_message_headers_new(SOUP_MESSAGE_HEADERS_RESPONSE);
-  soup_message_headers_append(headers, "Access-Control-Allow-Origin", "*");
-  webkit_uri_scheme_response_set_http_headers(response, headers);
-  soup_message_headers_unref(headers);
+  // Only custom-scheme and opaque ("null", e.g. the sandboxed body frame)
+  // origins get CORS access. An http(s) page that reached this view must
+  // not read local mail content.
+  SoupMessageHeaders *request_headers =
+      webkit_uri_scheme_request_get_http_headers(request);
+  const gchar *origin =
+      request_headers
+          ? soup_message_headers_get_one(request_headers, "Origin")
+          : nullptr;
+  const gboolean web_origin =
+      origin != nullptr &&
+      (g_ascii_strncasecmp(origin, "http:", 5) == 0 ||
+       g_ascii_strncasecmp(origin, "https:", 6) == 0);
+  if (!web_origin)
+  {
+    SoupMessageHeaders *headers =
+        soup_message_headers_new(SOUP_MESSAGE_HEADERS_RESPONSE);
+    soup_message_headers_append(headers, "Access-Control-Allow-Origin", "*");
+    webkit_uri_scheme_response_set_http_headers(response, headers);
+    soup_message_headers_unref(headers);
+  }
   webkit_uri_scheme_request_finish_with_response(request, response);
   g_object_unref(response);
 }
@@ -465,7 +491,9 @@ WebViewWebKitGTK *webview_webkitgtk_new(
   instance->method_channel = method_channel;
   instance->view_id = view_id;
   instance->zoom_level_after_load = 1.0;
-  instance->flutter_block_network_loads = FALSE;
+  // SCOMM_LINUX_NETWORK_SEAL_FAIL_CLOSED
+  // Mail WebViews must not phone home if the Flutter settings map never arrives.
+  instance->flutter_block_network_loads = TRUE;
   instance->flutter_allow_file_access = FALSE;
   instance->flutter_geolocation_enabled = FALSE;
 
@@ -692,13 +720,23 @@ void webview_webkitgtk_evaluate_javascript(
 
         if (error)
         {
-          if (g_strcmp0(error->message, "Unsupported result type") != 0)
+          // SCOMM_EVAL_JS_UNSUPPORTED_AS_EMPTY
+          // WebKitGTK reports this for void/undefined (and some boxed values).
+          // Returning a hard JAVASCRIPT_ERROR breaks Linux shell probes and
+          // fire-and-forget inject scripts under Flatpak (WebKit 2.50+).
+          if (g_strcmp0(error->message, "Unsupported result type") == 0)
           {
-            g_warning("🐧 JavaScript evaluation error: %s", error->message);
+            g_clear_error(&error);
+            g_autoptr(FlValue) empty = fl_value_new_string("");
+            response = FL_METHOD_RESPONSE(fl_method_success_response_new(empty));
           }
-          response = FL_METHOD_RESPONSE(fl_method_error_response_new(
-              "JAVASCRIPT_ERROR", error->message, nullptr));
-          g_error_free(error);
+          else
+          {
+            g_warning("Scomm WebKitGTK JS eval error: %s", error->message);
+            response = FL_METHOD_RESPONSE(fl_method_error_response_new(
+                "JAVASCRIPT_ERROR", error->message, nullptr));
+            g_error_free(error);
+          }
         }
         else if (value)
         {
@@ -709,15 +747,26 @@ void webview_webkitgtk_evaluate_javascript(
           {
             result_str = jsc_value_to_string(value);
           }
+          else if (jsc_value_is_boolean(value))
+          {
+            result_str = g_strdup(jsc_value_to_boolean(value) ? "true" : "false");
+          }
+          else if (jsc_value_is_number(value))
+          {
+            result_str = g_strdup_printf("%.0f", jsc_value_to_double(value));
+          }
+          else if (jsc_value_is_undefined(value) || jsc_value_is_null(value))
+          {
+            result_str = g_strdup("");
+          }
           else
           {
             result_str = jsc_value_to_json(value, 0);
             // jsc_value_to_json returns NULL for non-JSON-serializable values
-            // (e.g. undefined, functions). Guard against NULL before passing to
-            // fl_value_new_string which requires a non-NULL C string.
+            // (e.g. functions). Guard against NULL before fl_value_new_string.
             if (result_str == nullptr)
             {
-              result_str = g_strdup("null");
+              result_str = g_strdup("");
             }
           }
 
@@ -728,8 +777,8 @@ void webview_webkitgtk_evaluate_javascript(
         }
         else
         {
-          response = FL_METHOD_RESPONSE(fl_method_error_response_new(
-              "JAVASCRIPT_ERROR", "No result returned", nullptr));
+          g_autoptr(FlValue) empty = fl_value_new_string("");
+          response = FL_METHOD_RESPONSE(fl_method_success_response_new(empty));
         }
 
         fl_method_call_respond(call, response, nullptr);
@@ -887,8 +936,11 @@ void webview_webkitgtk_register_custom_scheme(
 
   // Shared contexts may only register a given scheme once. Every request
   // resolves its wrapper through instance_for_web_view().
+  // Lower-case: URI schemes are case-insensitive and the network allowlist
+  // looks the marker up by the lower-cased scheme of each request.
+  g_autofree gchar *scheme_lower = g_ascii_strdown(scheme, -1);
   g_autofree gchar *marker_key =
-      g_strdup_printf("scomm-uri-scheme-registered-%s", scheme);
+      g_strdup_printf("scomm-uri-scheme-registered-%s", scheme_lower);
   if (g_object_get_data(G_OBJECT(instance->web_context), marker_key) != nullptr)
   {
     g_print("🐧 Custom scheme '%s' already registered on shared context "

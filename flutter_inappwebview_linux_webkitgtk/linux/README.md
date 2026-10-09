@@ -7,8 +7,10 @@ This plugin requires **GTK 3** plus the WebKitGTK **4.1** stack. There is no fal
 | Component | pkg-config |
 |-----------|------------|
 | GTK 3 | `gtk+-3.0` |
-| WebKitGTK | `webkit2gtk-4.1` |
-| JavaScriptCoreGTK | `javascriptcoregtk-4.1` |
+| WebKitGTK | `webkit2gtk-4.1 >= 2.40` |
+| JavaScriptCoreGTK | `javascriptcoregtk-4.1 >= 2.40` |
+
+2.40 is the API floor, not a security floor. Mail rendering should run the newest stable WebKitGTK; check [WebKitGTK security advisories](https://webkitgtk.org/security.html) against the `webkitVersion` reported in native health.
 | libsoup | `libsoup-3.0` |
 
 GTK 4 and `webkitgtk-6.0` are **not** used (Flutter Linux still embeds GTK 3).
@@ -52,10 +54,19 @@ Placeholder origin: `localToGlobal(ancestor: RenderView) / devicePixelRatio`. Ho
 
 Payload includes monotonic `sequence` (stale updates ignored) and edge fields for deterministic rounding.
 
-## Unused: Flutter Platform View sources
-
-`webview_platform_view.cc` and `webview_platform_view_factory.cc` are **not** listed in `CMakeLists.txt` (`PLUGIN_SOURCES`). They were an experiment for in-tree `FlPlatformView` embedding. Do not link them without finishing registration and z-order tests; prefer the overlay model above.
-
 ## JS bridge
 
-At document start the plugin injects `window.flutter_inappwebview.callHandler` → `webkit.messageHandlers.<name>.postMessage`. Handlers `emailComposer` and `openExternalUrl` forward to Dart `onMessage`.
+At document start the plugin injects `window.flutter_inappwebview.callHandler` → `webkit.messageHandlers.<name>.postMessage`. Handlers `emailComposer` and `openExternalUrl` forward to Dart `onMessage`; the handler's return value settles the page's promise.
+
+Every native → Dart event that belongs to one view (`onMessage`, `onLoadStart`/`Stop`/`Error`, `shouldOverrideUrlLoading`, `onLoadResourceWithCustomScheme`) carries `viewId`. When that view has no Dart handler, `WebKitGtkChannelDispatcher` refuses the event instead of handing it to another view: navigation is cancelled and a bridge message is rejected.
+
+## Security defaults
+
+| Control | Behavior |
+|---------|----------|
+| Network seal | `blockNetworkLoads` defaults to **on** (also when no settings map arrives). Blocked views get their own ephemeral context with a dead proxy, a content filter for `http(s)`/`ws(s)`, and a navigation allowlist (`about:`, `data:`, `blob:`, registered custom schemes, `file:` only with `allowFileAccess`). |
+| Navigation policy | If Dart gives no usable `shouldOverrideUrlLoading` answer, the navigation is refused. |
+| Web process sandbox | Enabled on every context when it can start: inside Flatpak, or with `bwrap` on `PATH` outside a snap. Reported as `webProcessSandbox` in native health. WebKit aborts if it cannot launch the sandbox, so test new targets; `WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1` is WebKit's own escape hatch. |
+| Shared context | Views that are neither incognito nor network-blocked share one context. Context-wide state (cache model, cookie policy, proxy) is never set from a single view's settings. |
+| Permissions | Everything is denied except geolocation with `geolocationEnabled`. Hyperlink auditing (`<a ping>`) is off. |
+| Custom-scheme CORS | `Access-Control-Allow-Origin: *` is sent only to custom-scheme or opaque (`null`) origins, never to `http(s)` pages. |

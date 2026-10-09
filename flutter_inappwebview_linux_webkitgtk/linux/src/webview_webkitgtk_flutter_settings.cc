@@ -1,5 +1,10 @@
 // Generic mapping from optional Flutter "settings" maps to WebKitGTK.
-// Kept free of app/package identifiers so any embedder can reuse the contract.
+// SCOMM_LINUX_NETWORK_SEAL: mail WebViews fail closed. Missing maps / missing
+// blockNetworkLoads keys default to network blocked. Remote http(s)/ws(s)
+// subresources are denied via (1) scheme allowlist on decide-policy,
+// (2) a dead HTTP proxy on the WebsiteDataManager (Soup path, including
+// <img>/XHR), and (3) a WebKit content filter. Dart shouldInterceptRequest is
+// not the Linux http(s) control plane.
 
 #include "webview_webkitgtk_flutter_settings.h"
 
@@ -9,9 +14,27 @@
 
 namespace
 {
+  const char kNetworkBlockFilterId[] = "scomm-block-remote";
+  const char kDeadProxyUri[] = "http://127.0.0.1:1";
+
+  // Safari content-blocker JSON. Block all http(s)/ws(s) — mail content is
+  // appmsg://local. Do not except loopback (mail HTML must not GET local ports).
+  const char kRemoteBlockFilterJson[] =
+      "["
+      "{\"trigger\":{\"url-filter\":\"^https?://\"},\"action\":{\"type\":\"block\"}},"
+      "{\"trigger\":{\"url-filter\":\"^wss?://\"},\"action\":{\"type\":\"block\"}}"
+      "]";
+
   struct NavigationDecisionContext
   {
     WebKitPolicyDecision *decision;
+  };
+
+  struct ContentFilterApplyContext
+  {
+    WebKitWebView *web_view;
+    WebKitUserContentManager *manager;
+    WebKitUserContentFilterStore *store;
   };
 
   void on_navigation_policy_result(GObject *source_object,
@@ -23,7 +46,9 @@ namespace
     g_autoptr(FlMethodResponse) response = fl_method_channel_invoke_method_finish(
         FL_METHOD_CHANNEL(source_object), result, &error);
 
-    gint64 policy = 1; // ALLOW is the safe compatibility default.
+    // No usable answer from Dart (channel error, no handler, wrong type):
+    // refuse rather than let the page navigate unchecked.
+    gint64 policy = 0;
     if (!error && FL_IS_METHOD_SUCCESS_RESPONSE(response))
     {
       FlValue *value = fl_method_success_response_get_result(
@@ -87,9 +112,19 @@ namespace
     return def_val;
   }
 
+  // The plugin's shared context serves every view that is neither incognito
+  // nor network-blocked. Context-wide state (cache model, cookie policy,
+  // proxy) set from one view's settings would silently apply to all of them,
+  // so the shared context keeps WebKit's defaults.
+  gboolean context_is_shared(WebKitWebContext *ctx)
+  {
+    return ctx != nullptr &&
+           g_object_get_data(G_OBJECT(ctx), WEBVIEW_WEBKITGTK_SHARED_CONTEXT_KEY) != nullptr;
+  }
+
   void apply_context_level_from_map(WebKitWebContext *ctx, FlValue *map)
   {
-    if (!ctx)
+    if (!ctx || context_is_shared(ctx))
     {
       return;
     }
@@ -110,41 +145,162 @@ namespace
     }
   }
 
-  gboolean uri_is_http_loopback(const gchar *uri)
+  // Fail-closed allowlist when blockNetworkLoads is on. Matches Dart
+  // WebViewNetworkPolicy for mail surfaces (plus blob: for compose).
+  // Loopback http(s) is not allowlisted — mail HTML must not GET local ports.
+  gboolean uri_is_mail_allowlisted(const gchar *uri,
+                                   gboolean allow_file,
+                                   WebKitWebContext *ctx)
   {
-    if (!uri)
+    if (!uri || !*uri)
     {
       return FALSE;
     }
-    g_autoptr(GError) error = nullptr;
-    g_autoptr(GUri) parsed = g_uri_parse(uri, G_URI_FLAGS_PARSE_RELAXED, &error);
-    if (!parsed)
-      return FALSE;
-
-    const gchar *scheme = g_uri_get_scheme(parsed);
-    const gchar *host = g_uri_get_host(parsed);
-    if (!scheme || !host ||
-        (g_ascii_strcasecmp(scheme, "http") != 0 &&
-         g_ascii_strcasecmp(scheme, "https") != 0))
-      return FALSE;
-
-    return g_ascii_strcasecmp(host, "localhost") == 0 ||
-           g_strcmp0(host, "127.0.0.1") == 0 ||
-           g_strcmp0(host, "::1") == 0;
+    // Any custom scheme this plugin serves (appmsg plus resourceCustomSchemes)
+    // is local content, not network.
+    if (ctx)
+    {
+      g_autofree gchar *scheme = g_uri_parse_scheme(uri);
+      if (scheme)
+      {
+        g_autofree gchar *lower = g_ascii_strdown(scheme, -1);
+        g_autofree gchar *marker =
+            g_strdup_printf("scomm-uri-scheme-registered-%s", lower);
+        if (g_object_get_data(G_OBJECT(ctx), marker) != nullptr)
+          return TRUE;
+      }
+    }
+    if (g_ascii_strncasecmp(uri, "about:", 6) == 0)
+      return TRUE;
+    if (g_ascii_strncasecmp(uri, "data:", 5) == 0)
+      return TRUE;
+    if (g_ascii_strncasecmp(uri, "blob:", 5) == 0)
+      return TRUE;
+    if (g_ascii_strncasecmp(uri, "appmsg:", 7) == 0)
+      return TRUE;
+    if (allow_file && g_ascii_strncasecmp(uri, "file:", 5) == 0)
+      return TRUE;
+    return FALSE;
   }
 
-  gboolean uri_is_remote_http_or_https(const gchar *uri)
+  void apply_dead_proxy_seal(WebKitWebContext *ctx, gboolean block)
   {
-    if (!uri)
+    // Network-blocked views get their own context at creation. A shared-
+    // context view switched to blocked later relies on the policy check and
+    // content filter; toggling the shared proxy would cut or unseal its peers.
+    if (!ctx || context_is_shared(ctx))
     {
-      return FALSE;
+      return;
     }
-    g_autoptr(GUri) parsed = g_uri_parse(uri, G_URI_FLAGS_PARSE_RELAXED, nullptr);
-    if (!parsed)
-      return FALSE;
-    const gchar *scheme = g_uri_get_scheme(parsed);
-    return scheme && (g_ascii_strcasecmp(scheme, "http") == 0 ||
-                      g_ascii_strcasecmp(scheme, "https") == 0);
+    WebKitWebsiteDataManager *dm = webkit_web_context_get_website_data_manager(ctx);
+    if (!dm)
+    {
+      return;
+    }
+    if (block)
+    {
+      WebKitNetworkProxySettings *ps =
+          webkit_network_proxy_settings_new(kDeadProxyUri, nullptr);
+      webkit_website_data_manager_set_network_proxy_settings(
+          dm, WEBKIT_NETWORK_PROXY_MODE_CUSTOM, ps);
+      webkit_network_proxy_settings_free(ps);
+    }
+    else
+    {
+      webkit_website_data_manager_set_network_proxy_settings(
+          dm, WEBKIT_NETWORK_PROXY_MODE_DEFAULT, nullptr);
+    }
+  }
+
+  void on_network_block_filter_saved(GObject *source_object,
+                                     GAsyncResult *result,
+                                     gpointer user_data)
+  {
+    auto *ctx = static_cast<ContentFilterApplyContext *>(user_data);
+    g_autoptr(GError) error = nullptr;
+    WebKitUserContentFilter *filter =
+        webkit_user_content_filter_store_save_finish(
+            WEBKIT_USER_CONTENT_FILTER_STORE(source_object), result, &error);
+    if (error)
+    {
+      g_warning("Scomm WebKitGTK network content filter save failed: %s",
+                error->message);
+    }
+    else if (ctx->web_view && ctx->manager && filter)
+    {
+      webkit_user_content_manager_remove_filter_by_id(ctx->manager,
+                                                      kNetworkBlockFilterId);
+      webkit_user_content_manager_add_filter(ctx->manager, filter);
+    }
+    if (filter)
+      webkit_user_content_filter_unref(filter);
+    if (ctx->web_view)
+      g_object_remove_weak_pointer(G_OBJECT(ctx->web_view),
+                                   reinterpret_cast<gpointer *>(&ctx->web_view));
+    if (ctx->manager)
+      g_object_unref(ctx->manager);
+    if (ctx->store)
+      g_object_unref(ctx->store);
+    delete ctx;
+  }
+
+  void apply_content_filter_seal(WebViewWebKitGTK *instance, gboolean block)
+  {
+    if (!instance || !instance->user_content_manager)
+    {
+      return;
+    }
+    if (!block)
+    {
+      webkit_user_content_manager_remove_filter_by_id(
+          instance->user_content_manager, kNetworkBlockFilterId);
+      if (instance->web_view)
+      {
+        g_object_set_data(G_OBJECT(instance->web_view), "scomm-network-filter",
+                          nullptr);
+      }
+      return;
+    }
+    if (!instance->web_view)
+    {
+      return;
+    }
+    if (g_object_get_data(G_OBJECT(instance->web_view), "scomm-network-filter") !=
+        nullptr)
+    {
+      return;
+    }
+    g_object_set_data(G_OBJECT(instance->web_view), "scomm-network-filter",
+                      GINT_TO_POINTER(1));
+
+    g_autofree gchar *dir = g_build_filename(
+        g_get_user_cache_dir(), "scomm-ai", "webkit-content-filters", nullptr);
+    if (g_mkdir_with_parents(dir, 0700) != 0)
+    {
+      g_warning("Scomm WebKitGTK network content filter cache mkdir failed");
+      g_object_set_data(G_OBJECT(instance->web_view), "scomm-network-filter",
+                        nullptr);
+      return;
+    }
+
+    WebKitUserContentFilterStore *store = webkit_user_content_filter_store_new(dir);
+    auto *ctx = new ContentFilterApplyContext{
+        instance->web_view, instance->user_content_manager, store};
+    g_object_ref(ctx->manager);
+    g_object_add_weak_pointer(G_OBJECT(ctx->web_view),
+                              reinterpret_cast<gpointer *>(&ctx->web_view));
+    GBytes *source = g_bytes_new_static(kRemoteBlockFilterJson,
+                                        sizeof(kRemoteBlockFilterJson) - 1);
+    webkit_user_content_filter_store_save(
+        store, kNetworkBlockFilterId, source, nullptr,
+        on_network_block_filter_saved, ctx);
+    g_bytes_unref(source);
+  }
+
+  void apply_network_seal(WebViewWebKitGTK *instance, gboolean block)
+  {
+    apply_dead_proxy_seal(instance ? instance->web_context : nullptr, block);
+    apply_content_filter_seal(instance, block);
   }
 
   extern "C" gboolean webview_flutter_on_decide_policy(WebKitWebView *web_view,
@@ -157,6 +313,13 @@ namespace
     if (!inst || !decision)
     {
       return FALSE;
+    }
+
+    if (decision_type == WEBKIT_POLICY_DECISION_TYPE_NEW_WINDOW_ACTION &&
+        inst->flutter_block_network_loads)
+    {
+      webkit_policy_decision_ignore(decision);
+      return TRUE;
     }
 
     const gchar *uri = nullptr;
@@ -184,14 +347,16 @@ namespace
       return FALSE;
     }
 
-    if (inst->flutter_block_network_loads && uri_is_remote_http_or_https(uri) &&
-        !uri_is_http_loopback(uri))
+    if (inst->flutter_block_network_loads &&
+        !uri_is_mail_allowlisted(uri, inst->flutter_allow_file_access,
+                                 inst->web_context))
     {
       webkit_policy_decision_ignore(decision);
       return TRUE;
     }
 
-    if (!inst->flutter_allow_file_access && g_str_has_prefix(uri, "file:"))
+    if (!inst->flutter_block_network_loads &&
+        !inst->flutter_allow_file_access && g_str_has_prefix(uri, "file:"))
     {
       webkit_policy_decision_ignore(decision);
       return TRUE;
@@ -215,34 +380,29 @@ namespace
     return FALSE;
   }
 
-  extern "C" void webview_flutter_on_permission_request(WebKitWebView *web_view,
-                                                        WebKitPermissionRequest *request,
-                                                        gpointer user_data)
+  // "permission-request" returns gboolean; TRUE stops WebKit's default
+  // handler, which would otherwise decide the request a second time.
+  extern "C" gboolean webview_flutter_on_permission_request(WebKitWebView *web_view,
+                                                            WebKitPermissionRequest *request,
+                                                            gpointer user_data)
   {
     WebViewWebKitGTK *inst = static_cast<WebViewWebKitGTK *>(user_data);
     (void)web_view;
     if (!inst || !request)
     {
-      return;
+      return FALSE;
     }
 
-    // Geolocation (WebKitGeolocationPermissionRequest type name).
-    if (g_strcmp0(g_type_name(G_OBJECT_TYPE(request)), "WebKitGeolocationPermissionRequest") ==
-        0)
+    if (WEBKIT_IS_GEOLOCATION_PERMISSION_REQUEST(request) &&
+        inst->flutter_geolocation_enabled)
     {
-      if (inst->flutter_geolocation_enabled)
-      {
-        webkit_permission_request_allow(request);
-      }
-      else
-      {
-        webkit_permission_request_deny(request);
-      }
-      return;
+      webkit_permission_request_allow(request);
+      return TRUE;
     }
 
-    // Default-deny unknown permission types for a hardened generic viewer.
+    // Default-deny everything else for a hardened generic viewer.
     webkit_permission_request_deny(request);
+    return TRUE;
   }
 
 } // namespace
@@ -252,9 +412,14 @@ WebKitWebContext *webview_webkitgtk_create_context_from_flutter_settings(
     WebKitWebContext *shared_context)
 {
   const gboolean incognito = flutter_map_get_bool(map, "incognito", FALSE);
+  // Same fail-closed default as webview_webkitgtk_apply_flutter_settings_map.
+  // A blocked view needs its own data manager: the dead proxy is set per
+  // manager, and on the shared one it would cut every network-allowed peer.
+  const gboolean block_network =
+      flutter_map_get_bool(map, "blockNetworkLoads", TRUE);
 
   WebKitWebContext *ctx = nullptr;
-  if (incognito)
+  if (incognito || block_network)
   {
     WebKitWebsiteDataManager *dm = webkit_website_data_manager_new_ephemeral();
     ctx = webkit_web_context_new_with_website_data_manager(dm);
@@ -284,11 +449,12 @@ void webview_webkitgtk_apply_flutter_settings_map(WebViewWebKitGTK *instance, Fl
   }
   if (!map || fl_value_get_type(map) != FL_VALUE_TYPE_MAP)
   {
-    // Same defaults as missing keys in a map (typical embedder defaults).
-    instance->flutter_block_network_loads = FALSE;
+    // SCOMM_LINUX_NETWORK_SEAL: missing map fails closed.
+    instance->flutter_block_network_loads = TRUE;
     instance->flutter_allow_file_access = FALSE;
     instance->flutter_geolocation_enabled = FALSE;
     apply_context_level_from_map(instance->web_context, nullptr);
+    apply_network_seal(instance, TRUE);
     WebKitSettings *settings = webkit_web_view_get_settings(instance->web_view);
     if (!settings)
     {
@@ -306,14 +472,18 @@ void webview_webkitgtk_apply_flutter_settings_map(WebViewWebKitGTK *instance, Fl
     webkit_settings_set_enable_media_stream(settings, FALSE);
     webkit_settings_set_enable_webaudio(settings, FALSE);
     webkit_settings_set_enable_webgl(settings, FALSE);
+    // <a ping> would POST to a tracker on every link click.
+    webkit_settings_set_enable_hyperlink_auditing(settings, FALSE);
     return;
   }
 
   apply_context_level_from_map(instance->web_context, map);
 
-  instance->flutter_block_network_loads = flutter_map_get_bool(map, "blockNetworkLoads", FALSE);
+  instance->flutter_block_network_loads =
+      flutter_map_get_bool(map, "blockNetworkLoads", TRUE);
   instance->flutter_allow_file_access = flutter_map_get_bool(map, "allowFileAccess", FALSE);
   instance->flutter_geolocation_enabled = flutter_map_get_bool(map, "geolocationEnabled", FALSE);
+  apply_network_seal(instance, instance->flutter_block_network_loads);
 
   WebKitSettings *settings = webkit_web_view_get_settings(instance->web_view);
   if (!settings)
@@ -369,6 +539,8 @@ void webview_webkitgtk_apply_flutter_settings_map(WebViewWebKitGTK *instance, Fl
   webkit_settings_set_enable_media_stream(settings, FALSE);
   webkit_settings_set_enable_webaudio(settings, FALSE);
   webkit_settings_set_enable_webgl(settings, FALSE);
+  // <a ping> would POST to a tracker on every link click.
+  webkit_settings_set_enable_hyperlink_auditing(settings, FALSE);
 }
 
 void webview_webkitgtk_flutter_settings_install_handlers(WebViewWebKitGTK *instance)

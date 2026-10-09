@@ -56,7 +56,8 @@ static void webview_plugin_handle_method_call(
 
   g_print("📱 WebView: Method call: %s\n", method);
 
-  FlMethodResponse *lifecycle_response = nullptr;
+  // Handlers hand over ownership of the response; respond() only borrows it.
+  g_autoptr(FlMethodResponse) lifecycle_response = nullptr;
   if (webview_plugin_try_handle_lifecycle_method(
           self->method_channel,
           self->registrar,
@@ -74,7 +75,7 @@ static void webview_plugin_handle_method_call(
     return;
   }
 
-  FlMethodResponse *content_response = nullptr;
+  g_autoptr(FlMethodResponse) content_response = nullptr;
   if (webview_plugin_try_handle_content_method(
           self->overlay_windows, method, args, method_call, &content_response))
   {
@@ -147,6 +148,8 @@ static void webview_plugin_init(WebViewPlugin *self)
   self->registrar = nullptr;
   self->shared_web_context = webkit_web_context_new();
   webview_webkitgtk_configure_context_sandbox(self->shared_web_context);
+  g_object_set_data(G_OBJECT(self->shared_web_context),
+                    WEBVIEW_WEBKITGTK_SHARED_CONTEXT_KEY, GINT_TO_POINTER(1));
   // Create hash table for overlay windows (key: gint64 as gpointer, value: WebViewOverlayWindow*)
   self->overlay_windows = g_hash_table_new_full(
       platform_view_hash, // Reusing hash/equal functions (they work for gint64 keys)
