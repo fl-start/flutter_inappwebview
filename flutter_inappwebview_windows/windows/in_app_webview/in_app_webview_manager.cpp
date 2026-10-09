@@ -22,14 +22,14 @@ namespace flutter_inappwebview_plugin
     ChannelDelegate(plugin->registrar->messenger(), InAppWebViewManager::METHOD_CHANNEL_NAME)
   {
     if (!rohelper_) {
-      rohelper_ = std::make_unique<rx::RoHelper>(RO_INIT_SINGLETHREADED);
+      rohelper_ = new rx::RoHelper(RO_INIT_SINGLETHREADED);
 
       if (rohelper_->WinRtAvailable()) {
         DispatcherQueueOptions options{ sizeof(DispatcherQueueOptions),
                                        DQTYPE_THREAD_CURRENT, DQTAT_COM_STA };
 
         if (FAILED(rohelper_->CreateDispatcherQueueController(
-          options, dispatcher_queue_controller_.put()))) {
+          options, &dispatcher_queue_controller_))) {
           std::cerr << "Creating DispatcherQueueController failed." << std::endl;
           return;
         }
@@ -41,7 +41,7 @@ namespace flutter_inappwebview_plugin
           return;
         }
 
-        graphics_context_ = std::make_unique<GraphicsContext>(rohelper_.get());
+        graphics_context_ = new GraphicsContext(rohelper_);
         compositor_ = graphics_context_->CreateCompositor();
         if (compositor_) {
           // fix for KernelBase.dll RaiseFailFastException

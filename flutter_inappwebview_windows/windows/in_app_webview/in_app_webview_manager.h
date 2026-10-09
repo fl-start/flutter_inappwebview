@@ -34,9 +34,9 @@ namespace flutter_inappwebview_plugin
     bool isGraphicsCaptureSessionSupported();
     GraphicsContext* graphics_context() const
     {
-      return graphics_context_.get();
+      return graphics_context_;
     };
-    rx::RoHelper* rohelper() const { return rohelper_.get(); }
+    rx::RoHelper* rohelper() const { return rohelper_; }
     winrt::com_ptr<ABI::Windows::UI::Composition::ICompositor> compositor() const
     {
       return compositor_;
@@ -52,10 +52,14 @@ namespace flutter_inappwebview_plugin
     void createInAppWebView(const flutter::EncodableMap* arguments, std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result);
     void disposeKeepAlive(const std::string& keepAliveId);
   private:
-    inline static std::shared_ptr<rx::RoHelper> rohelper_ = nullptr;
-    inline static winrt::com_ptr<ABI::Windows::System::IDispatcherQueueController>
-      dispatcher_queue_controller_;
-    inline static std::unique_ptr<GraphicsContext> graphics_context_ = nullptr;
+    // Process-lifetime objects, deliberately never freed. A static destructor
+    // runs from DLL_PROCESS_DETACH after ExitProcess has killed the GPU
+    // driver's threads; releasing the D3D11 device there can wait forever on
+    // a driver lock one of those threads held. The OS reclaims them at exit.
+    inline static rx::RoHelper* rohelper_ = nullptr;
+    inline static ABI::Windows::System::IDispatcherQueueController*
+      dispatcher_queue_controller_ = nullptr;
+    inline static GraphicsContext* graphics_context_ = nullptr;
     inline static winrt::com_ptr<ABI::Windows::UI::Composition::ICompositor> compositor_;
     WNDCLASS windowClass_ = {};
     inline static bool valid_ = false;
