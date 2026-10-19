@@ -3,6 +3,7 @@ import 'dart:async';
 import 'dart:ui';
 
 import 'package:flutter/gestures.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/widgets.dart';
 import '../platform_util.dart';
@@ -294,7 +295,7 @@ class CustomPlatformView extends StatefulWidget {
 }
 
 class _CustomPlatformViewState extends State<CustomPlatformView>
-    with PlatformUtilListener {
+    with PlatformUtilListener, SingleTickerProviderStateMixin {
   final GlobalKey _key = GlobalKey();
   final _downButtons = <int, PointerButton>{};
 
@@ -311,9 +312,18 @@ class _CustomPlatformViewState extends State<CustomPlatformView>
 
   PlatformUtil _platformUtil = PlatformUtil.instance();
 
+  // The Windows engine does not forward DirectManipulation inertia, so a
+  // trackpad pan stops dead on lift unless we fling like a Scrollable does.
+  VelocityTracker? _panVelocity;
+  late final Ticker _flingTicker;
+  ClampingScrollSimulation? _flingX;
+  ClampingScrollSimulation? _flingY;
+  Offset _flingSent = Offset.zero;
+
   @override
   void initState() {
     super.initState();
+    _flingTicker = createTicker(_onFlingTick);
 
     _platformUtil.addListener(this);
 
@@ -411,6 +421,7 @@ class _CustomPlatformViewState extends State<CustomPlatformView>
                   _controller._setCursorPos(ev.localPosition);
                 },
                 onPointerDown: (ev) {
+                  _stopFling();
                   _reportSurfaceSize();
                   _reportWidgetPosition();
 
@@ -486,6 +497,8 @@ class _CustomPlatformViewState extends State<CustomPlatformView>
                   }
                 },
                 onPointerSignal: (signal) {
+                  // Also covers PointerScrollInertiaCancelEvent.
+                  _stopFling();
                   if (signal is PointerScrollEvent) {
                     _controller._setScrollDelta(
                       -signal.scrollDelta.dx,
@@ -493,9 +506,16 @@ class _CustomPlatformViewState extends State<CustomPlatformView>
                     );
                   }
                 },
+                onPointerPanZoomStart: (ev) {
+                  _stopFling();
+                  _panVelocity =
+                      VelocityTracker.withKind(PointerDeviceKind.trackpad);
+                },
                 onPointerPanZoomUpdate: (ev) {
+                  _panVelocity?.addPosition(ev.timeStamp, ev.pan);
                   _controller._setScrollDelta(ev.panDelta.dx, ev.panDelta.dy);
                 },
+                onPointerPanZoomEnd: (ev) => _startFling(),
                 child: MouseRegion(
                   cursor: _cursor,
                   onEnter: (ev) {
@@ -557,8 +577,39 @@ class _CustomPlatformViewState extends State<CustomPlatformView>
     );
   }
 
+  void _startFling() {
+    final v = _panVelocity?.getVelocity().pixelsPerSecond ?? Offset.zero;
+    _panVelocity = null;
+    if (v.distance < kMinFlingVelocity) return;
+    final clamped = v * (v.distance.clamp(0.0, kMaxFlingVelocity) / v.distance);
+    _flingX = ClampingScrollSimulation(position: 0, velocity: clamped.dx);
+    _flingY = ClampingScrollSimulation(position: 0, velocity: clamped.dy);
+    _flingSent = Offset.zero;
+    _flingTicker.start();
+  }
+
+  void _onFlingTick(Duration elapsed) {
+    final t = elapsed.inMicroseconds / Duration.microsecondsPerSecond;
+    final pos = Offset(_flingX!.x(t), _flingY!.x(t));
+    final delta = pos - _flingSent;
+    _flingSent = pos;
+    if (delta != Offset.zero) {
+      _controller._setScrollDelta(delta.dx, delta.dy);
+    }
+    if (_flingX!.isDone(t) && _flingY!.isDone(t)) {
+      _stopFling();
+    }
+  }
+
+  void _stopFling() {
+    if (_flingTicker.isActive) {
+      _flingTicker.stop();
+    }
+  }
+
   @override
   void dispose() {
+    _flingTicker.dispose();
     _platformUtil.removeListener(this);
     _cursorSubscription?.cancel();
     _controller.dispose();
