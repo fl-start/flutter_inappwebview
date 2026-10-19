@@ -4112,7 +4112,24 @@ namespace flutter_inappwebview_plugin
       return;
     }
 
-    auto offset = static_cast<short>(delta * settings->scrollMultiplier);
+    // Flutter deltas are logical px; WebView2 reads mouseData in WHEEL_DELTA
+    // units, which Chromium scrolls by lines * 100/3 px per WHEEL_DELTA.
+    // Convert back so 1 px of trackpad pan is 1 px in the page, and keep the
+    // fraction: trackpad pans are mostly < 1 unit per event and truncating
+    // each one dropped slow pans entirely.
+    UINT lines = 3;
+    SystemParametersInfo(SPI_GETWHEELSCROLLLINES, 0, &lines, 0);
+    if (lines == 0 || lines == WHEEL_PAGESCROLL) {
+      lines = 3;
+    }
+    double& remainder = horizontal ? scrollRemainderX_ : scrollRemainderY_;
+    const double units = remainder + delta * settings->scrollMultiplier *
+      WHEEL_DELTA / (lines * 100.0 / 3.0);
+    const auto offset = static_cast<short>(units);
+    remainder = units - offset;
+    if (offset == 0) {
+      return;
+    }
 
     if (horizontal) {
       webViewCompositionController->SendMouseInput(

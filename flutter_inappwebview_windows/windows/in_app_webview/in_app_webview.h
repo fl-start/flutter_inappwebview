@@ -285,6 +285,9 @@ namespace flutter_inappwebview_plugin
     void ApplySurfaceSizeNow(size_t width, size_t height, float scale_factor);
     void ApplyPositionNow(size_t x, size_t y, float scale_factor);
     POINT lastCursorPos_ = { 0, 0 };
+    // Wheel units not yet sent; see sendScroll.
+    double scrollRemainderX_ = 0.0;
+    double scrollRemainderY_ = 0.0;
     VirtualKeyState virtualKeys_;
 
     const std::string expectedBridgeSecret = get_uuid();
